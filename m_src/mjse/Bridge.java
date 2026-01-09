@@ -35,16 +35,44 @@ public class Bridge {
             }
             
             // UNIX domain socket connection (Java 16+)
-            // For Java 11 compatibility, we'll use StandardProtocolFamily.UNIX if available
+            // Try to use UnixDomainSocketAddress via reflection for compatibility
             try {
-                UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketPath);
-                channel = SocketChannel.open(StandardProtocolFamily.UNIX);
-                channel.connect(address);
+                // Check Java version
+                String javaVersion = System.getProperty("java.version");
+                System.out.println("Java version: " + javaVersion);
+                
+                // Attempt to use Java 16+ UnixDomainSocketAddress
+                Class<?> addressClass = Class.forName("java.net.UnixDomainSocketAddress");
+                Class<?> familyClass = Class.forName("java.net.StandardProtocolFamily");
+                
+                // Get UNIX enum value
+                Object unixFamily = java.lang.Enum.valueOf(
+                    (Class<? extends Enum>)familyClass, "UNIX");
+                
+                // Create UnixDomainSocketAddress
+                java.lang.reflect.Method ofMethod = addressClass.getMethod("of", String.class);
+                Object address = ofMethod.invoke(null, socketPath);
+                
+                // Open SocketChannel with UNIX family
+                java.lang.reflect.Method openMethod = SocketChannel.class.getMethod(
+                    "open", Class.forName("java.net.ProtocolFamily"));
+                channel = (SocketChannel)openMethod.invoke(null, unixFamily);
+                
+                // Connect
+                channel.connect((java.net.SocketAddress)address);
                 channel.configureBlocking(true);
                 connected = true;
                 return true;
+                
+            } catch (ClassNotFoundException e) {
+                // Java < 16, UnixDomainSocketAddress not available
+                System.err.println("UNIX domain sockets require Java 16+");
+                System.err.println("Current Java version does not support UnixDomainSocketAddress");
+                System.err.println("Please upgrade to Java 16+ or use JNI/JNA for UNIX socket support");
+                return false;
             } catch (Exception e) {
                 System.err.println("Failed to connect to UNIX socket: " + e.getMessage());
+                e.printStackTrace();
                 return false;
             }
         } catch (Exception e) {

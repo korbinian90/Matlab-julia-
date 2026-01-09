@@ -37,8 +37,8 @@ mutable struct MJSEState
     shm_io::Union{IOStream, Nothing}
     shm_array::Union{Vector{UInt8}, Nothing}
     socket_path::String
-    server::Union{Sockets.ListenSocket, Nothing}
-    client::Union{Sockets.TCPSocket, Nothing}
+    server::Union{Sockets.PipeServer, Nothing}
+    client::Union{IO, Nothing}
     matlab_pid::Int
     running::Bool
     heartbeat_task::Union{Task, Nothing}
