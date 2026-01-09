@@ -2,61 +2,65 @@
 
 High-performance bidirectional communication engine between MATLAB and Julia using shared memory and UNIX domain sockets.
 
+## 🚀 Quick Start (Clone and Run!)
+
+**Just clone and run - everything auto-installs on first use:**
+
+```matlab
+% Clone the repository
+% git clone https://github.com/korbinian90/Matlab-julia-.git
+% cd Matlab-julia-
+
+% Add to path
+addpath('m_src');
+
+% Start the Julia daemon (auto-downloads Julia and builds bridge on first run)
+jlcall('start');
+
+% Use Julia functions
+result = jlcall('sum', [1 2 3 4 5]);
+
+% Stop when done
+jlcall('stop');
+```
+
+**That's it!** On first run, `jlcall` will automatically:
+- Download portable Julia 1.12.x (if not found)
+- Build the Java bridge for socket communication
+- Configure everything for immediate use
+
+No manual setup required - just clone and call `jlcall('start')`!
+
 ## Features
 
-- **Double-buffered shared memory**: 64-byte header + two 128MB pages for efficient data transfer
-- **UNIX domain sockets**: Low-latency IPC via Java bridge (POSIX) with Windows Named Pipe support planned
-- **Portable Julia runtime**: Automated download and setup of Julia 1.12.x
+- **Auto-Setup**: Downloads Julia and builds dependencies automatically on first run
+- **Zero-Copy Transfer**: Uses `memmapfile` (MATLAB) and `Mmap.mmap` (Julia) for shared memory
+- **Unix Domain Sockets**: Low-latency IPC via Java bridge (POSIX) with Windows Named Pipe support planned
+- **MATDaemon-style Interface**: Simple `jlcall()` function for all Julia interactions
 - **Cross-platform**: Ubuntu, macOS, and Windows support
 - **CI/CD**: Automated testing via GitHub Actions
 
-## Quick Start
-
-### Prerequisites
-
-- MATLAB R2024b or later
-- Java JDK 11+ (for compiling the bridge)
-- Julia 1.12+ (optional - can be downloaded via setup script)
-
-### Installation
-
-```matlab
-% Run the setup script to download Julia, build the bridge, and prewarm caches
-setup
-```
-
-### Usage
-
-```matlab
-% Initialize the engine
-engine = MJSE();
-engine.start();
-
-% Test roundtrip communication
-test_data = rand(1000, 1000);  % 8MB matrix
-latency = engine.test_roundtrip(test_data);
-fprintf('Latency: %.4f seconds\n', latency);
-
-% Shutdown
-engine.shutdown();
-```
-
-### Running Tests
-
-```matlab
-addpath('m_src');
-addpath('tests');
-test_roundtrip();
-```
-
 ## Architecture
 
-### Components
+### Core Components
 
-- **`m_src/MJSE.m`**: MATLAB manager class handling initialization, communication, and cleanup
-- **`m_src/mjse/Bridge.java`**: Java bridge for UNIX socket communication
-- **`jl_src/MJSEWorker.jl`**: Julia worker daemon for payload processing
-- **`setup.m`**: Setup script for environment preparation
+- **`jlcall.m`**: Main interface - handles auto-setup, daemon lifecycle, and function calls
+- **`MJSE.m`**: Engine managing shared memory (via memmapfile), Java bridge, and Julia daemon
+- **`Bridge.java`**: Java bridge for UNIX socket communication (Java 11+/16+ compatible)
+- **`MJSEWorker.jl`**: Julia worker daemon with shared memory mapping and heartbeat monitoring
+- **`mjse_setup.m`**: Setup script (called automatically by jlcall on first run)
+
+### Data Flow
+
+1. **Control Path** (Unix Domain Socket):
+   - Function name and metadata
+   - Handshake and status messages
+   - Small control signals
+
+2. **Data Path** (Shared Memory):
+   - MATLAB: `memmapfile` for zero-copy writes
+   - Julia: `Mmap.mmap` for zero-copy reads
+   - Large arrays (100MB+) transfer with minimal overhead
 
 ### Shared Memory Layout
 
@@ -70,39 +74,91 @@ test_roundtrip();
   - Bytes 32-63: Reserved
 
 [Page 0: 128 MB data buffer]
-[Page 1: 128 MB data buffer]
+[Page 1: 128 MB data buffer]  (double-buffered for pipelining)
 ```
 
-### Communication Protocol
+## Manual Setup (Optional)
 
-1. MATLAB creates shared memory file and launches Julia worker
-2. Julia worker opens shared memory and starts UNIX socket server
-3. Binary handshake exchange ("MJSE_HANDSHAKE" / "MJSE_ACK")
-4. Heartbeat task monitors MATLAB process
-5. Payload exchange via socket (currently echo stub)
+If you want to run setup manually (not needed for normal use):
+
+```matlab
+mjse_setup  % Downloads Julia, builds bridge, renames Linux libs
+```
+
+## Advanced Usage
+
+### Direct Engine Access
+
+```matlab
+% For advanced users who want direct engine control
+engine = MJSE();
+engine.start();
+latency = engine.test_roundtrip(rand(1000, 1000));
+engine.shutdown();
+```
+
+### Linux Library Isolation
+
+On Linux, MJSE automatically renames Julia's C++ runtime libraries with `_mjse.so` suffix to prevent conflicts with MATLAB's bundled libraries:
+- `libstdc++.so.6` → `libstdc++_mjse.so.6`
+- `libgcc_s.so.1` → `libgcc_s_mjse.so.1`  
+- `libgfortran.so.5` → `libgfortran_mjse.so.5`
+
+This is done automatically during setup (controlled by `MJSE_SHADOW_LIBS=1` environment variable in CI).
 
 ## Development Status
 
-### Implemented
+### ✅ Implemented
 
-- ✅ Double-buffered shared memory setup
-- ✅ Java bridge with UNIX socket support (via reflection for Java 11+ compatibility)
-- ✅ Julia worker with socket listener and heartbeat
-- ✅ Binary handshake protocol
-- ✅ Roundtrip test framework
-- ✅ CI/CD with GitHub Actions
+- Auto-setup on first run
+- `jlcall()` interface for MATLAB-Julia communication  
+- `memmapfile`-based shared memory (MATLAB side)
+- Java bridge with UNIX socket support (via reflection for Java 11+/16+)
+- Julia worker with socket listener and heartbeat
+- Binary handshake protocol
+- Roundtrip test framework
+- CI/CD with GitHub Actions (Ubuntu/macOS/Windows)
 
-### Planned (TODOs in code)
+### 🔄 In Progress (TODOs in code)
 
-- ⏳ Windows Named Pipe support in Java bridge
-- ⏳ Rich payload metadata (dimensions, element type, endianness, checksum)
-- ⏳ Timeout handling and error recovery
-- ⏳ Configurable buffer sizing
-- ⏳ Platform-specific PID monitoring
+- Windows Named Pipe support in Java bridge
+- Full shared memory data protocol (currently echo stub)
+- Rich payload metadata (dimensions, element type, endianness, checksum)
+- Timeout handling and error recovery
+- Function dispatch in Julia worker
+- Configurable buffer sizing
+
+## Testing
+
+```matlab
+addpath('m_src', 'tests');
+test_roundtrip();
+```
 
 ## Contributing
 
 This is an active development project. See TODO comments in the code for areas that need implementation or improvement.
+
+## Repository Structure
+
+```
+Matlab-julia-/
+├── m_src/              # MATLAB source files
+│   ├── jlcall.m        # Main interface (auto-setup)
+│   ├── MJSE.m          # Engine manager
+│   └── mjse/           # Java bridge
+│       ├── Bridge.java
+│       └── bridge_build.m
+├── jl_src/             # Julia source files
+│   ├── MJSEWorker.jl   # Worker daemon
+│   └── Project.toml
+├── tests/              # Test files
+│   └── test_roundtrip.m
+├── external/           # Auto-downloaded Julia runtime (gitignored)
+├── mjse_setup.m        # Setup script (auto-called by jlcall)
+├── setup.m             # Legacy setup script
+└── .github/workflows/  # CI configuration
+```
 
 ## License
 

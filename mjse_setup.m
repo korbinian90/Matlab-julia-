@@ -1,14 +1,15 @@
-function setup()
-% SETUP Download portable Julia, build Java bridge, and prewarm Julia cache
+function mjse_setup()
+% MJSE_SETUP Download portable Julia, configure jlcall, and prepare MJSE environment
 %
 % This script prepares the MJSE environment:
 % 1. Downloads portable Julia 1.12.x runtime based on architecture
-% 2. Optionally patches Linux libraries with patchelf (if MJSE_SHADOW_LIBS=1)
+% 2. Renames Linux libraries with _mjse.so suffix to prevent MATLAB library hijacking
 % 3. Builds the Java bridge (MJSEBridge.jar)
-% 4. Prewarms Julia package cache via Pkg.precompile()
+% 4. Configures jlcall to use the private Julia runtime
+% 5. Prewarms Julia package cache via Pkg.precompile()
 %
 % Environment variables:
-%   MJSE_SHADOW_LIBS - Set to '1' to enable patchelf library shadowing on Linux
+%   MJSE_SHADOW_LIBS - Set to '1' to enable library renaming on Linux
 
     fprintf('=== MJSE Setup ===\n\n');
     
@@ -30,13 +31,13 @@ function setup()
         fprintf('Step 1: Portable Julia already present, skipping download\n');
     end
     
-    % Step 2: Optional library patching on Linux
+    % Step 2: Library renaming on Linux
     shadow_libs = getenv('MJSE_SHADOW_LIBS');
     if ~isempty(shadow_libs) && strcmp(shadow_libs, '1') && isunix && ~ismac
-        fprintf('\nStep 2: Patching Linux libraries with patchelf...\n');
-        patch_linux_libs(julia_dir);
+        fprintf('\nStep 2: Renaming Linux libraries with _mjse.so suffix...\n');
+        rename_linux_libs(julia_dir);
     else
-        fprintf('\nStep 2: Skipping library patching (not needed or not enabled)\n');
+        fprintf('\nStep 2: Skipping library renaming (not needed or not enabled)\n');
     end
     
     % Step 3: Build Java bridge
@@ -48,9 +49,10 @@ function setup()
     prewarm_julia_cache(julia_dir);
     
     fprintf('\n=== MJSE Setup Complete ===\n');
-    fprintf('You can now use MJSE:\n');
-    fprintf('  engine = MJSE();\n');
-    fprintf('  engine.start();\n');
+    fprintf('You can now use jlcall:\n');
+    fprintf('  jlcall(''start'');\n');
+    fprintf('  result = jlcall(''sum'', [1 2 3 4 5]);\n');
+    fprintf('  jlcall(''stop'');\n');
 end
 
 function download_julia(julia_dir)
@@ -141,7 +143,7 @@ function download_julia(julia_dir)
     end
 end
 
-function patch_linux_libs(julia_dir)
+function rename_linux_libs(julia_dir)
     % Rename Linux libraries to prevent MATLAB library hijacking
     %
     % Instead of using patchelf to modify rpath, we rename the libraries

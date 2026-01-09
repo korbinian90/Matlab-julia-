@@ -14,7 +14,7 @@ classdef MJSE < handle
     
     properties (Access = private)
         shm_path        % Path to shared memory file
-        shm_file        % File handle for shared memory
+        shm_mmap        % memmapfile object for zero-copy access
         socket_path     % Path to UNIX domain socket
         bridge          % Java bridge object
         julia_process   % Julia process handle
@@ -36,7 +36,7 @@ classdef MJSE < handle
             obj.header_size = MJSE.HEADER_SIZE;
             obj.page_size = MJSE.PAGE_SIZE;
             obj.is_initialized = false;
-            obj.shm_file = [];
+            obj.shm_mmap = [];
             obj.bridge = [];
             obj.julia_process = [];
         end
@@ -153,6 +153,9 @@ classdef MJSE < handle
     methods (Access = private)
         function setup_shared_memory(obj)
             %SETUP_SHARED_MEMORY Create and initialize double-buffered shared memory
+            %
+            % Uses memmapfile for zero-copy access from MATLAB side
+            % Julia will use Mmap.mmap to access the same file
             
             % Create temporary shared memory file
             if ispc
@@ -173,8 +176,8 @@ classdef MJSE < handle
             total_size = obj.header_size + 2 * obj.page_size;
             
             % Create and initialize shared memory file
-            obj.shm_file = fopen(obj.shm_path, 'w+');
-            if obj.shm_file == -1
+            fid = fopen(obj.shm_path, 'w');
+            if fid == -1
                 error('MJSE:ShmCreate', 'Failed to create shared memory file: %s', obj.shm_path);
             end
             
@@ -194,22 +197,32 @@ classdef MJSE < handle
             header(17:24) = typecast(int64(0), 'uint8');
             
             % MATLAB PID (bytes 24-31)
-            % TODO: Get actual PID - placeholder for now
             matlab_pid = int64(feature('getpid'));
             header(25:32) = typecast(matlab_pid, 'uint8');
             
             % Write header to file
-            fwrite(obj.shm_file, header, 'uint8');
+            fwrite(fid, header, 'uint8');
             
             % Allocate space for two pages (write zeros)
             page_buffer = zeros(1, obj.page_size, 'uint8');
-            fwrite(obj.shm_file, page_buffer, 'uint8');  % Page 0
-            fwrite(obj.shm_file, page_buffer, 'uint8');  % Page 1
+            fwrite(fid, page_buffer, 'uint8');  % Page 0
+            fwrite(fid, page_buffer, 'uint8');  % Page 1
             
-            % Flush to disk
-            fclose(obj.shm_file);
+            % Flush and close
+            fclose(fid);
+            
+            % Create memmapfile for zero-copy access
+            % Format: header (64 bytes) + page0 (128MB) + page1 (128MB)
+            obj.shm_mmap = memmapfile(obj.shm_path, ...
+                'Format', { ...
+                    'uint8', [1 obj.header_size], 'header'; ...
+                    'uint8', [1 obj.page_size], 'page0'; ...
+                    'uint8', [1 obj.page_size], 'page1' ...
+                }, ...
+                'Writable', true);
             
             fprintf('Shared memory created: %s (%.2f MB)\n', obj.shm_path, total_size / 1024 / 1024);
+            fprintf('Memory-mapped for zero-copy access\n');
         end
         
         function load_java_bridge(obj)
@@ -377,6 +390,15 @@ classdef MJSE < handle
                 catch
                 end
                 obj.julia_process = [];
+            end
+            
+            % Close memory map first
+            if ~isempty(obj.shm_mmap)
+                try
+                    delete(obj.shm_mmap);
+                catch
+                end
+                obj.shm_mmap = [];
             end
             
             % Remove shared memory file
