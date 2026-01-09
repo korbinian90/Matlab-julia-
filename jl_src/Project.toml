@@ -1,0 +1,11 @@
+name = "MJSEWorker"
+uuid = "12345678-1234-1234-1234-123456789abc"
+authors = ["MJSE Team"]
+version = "0.1.0"
+
+[deps]
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+
+[compat]
+julia = "1.12"

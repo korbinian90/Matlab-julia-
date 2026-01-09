@@ -1,0 +1,12 @@
+# MJSE High-Level Version Manifest
+# Captures minimum required versions for the MATLAB-Julia Satellite Engine
+
+[versions]
+julia = "1.12.0"
+matlab = "R2024b"
+bridge_jar = "MJSEBridge.jar"
+
+[notes]
+# Julia: 1.12.x series required for compatibility
+# MATLAB: R2024b or later for Java 11+ support
+# Bridge: Compiled Java bridge for UNIX socket communication

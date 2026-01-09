@@ -1,0 +1,29 @@
+# MJSE Build Artifacts
+m_src/MJSEBridge.jar
+m_src/mjse/build/
+m_src/mjse/*.class
+
+# Portable Julia Runtime
+external/
+
+# MATLAB artifacts
+*.asv
+*.mex*
+
+# Julia artifacts
+jl_src/Manifest.toml
+
+# Temporary files
+*.log
+/tmp/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+*~
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
