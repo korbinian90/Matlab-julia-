@@ -3,13 +3,13 @@ function mjse_setup()
 %
 % This script prepares the MJSE environment:
 % 1. Downloads portable Julia 1.12.x runtime based on architecture
-% 2. Renames Linux libraries with _mjse.so suffix to prevent MATLAB library hijacking
+% 2. Sets up library isolation via LD_LIBRARY_PATH (no file modification)
 % 3. Builds the Java bridge (MJSEBridge.jar)
 % 4. Configures jlcall to use the private Julia runtime
 % 5. Prewarms Julia package cache via Pkg.precompile()
 %
 % Environment variables:
-%   MJSE_SHADOW_LIBS - Set to '1' to enable library renaming on Linux
+%   MJSE_SHADOW_LIBS - Set to '1' to indicate library isolation is active
 
     fprintf('=== MJSE Setup ===\n\n');
     

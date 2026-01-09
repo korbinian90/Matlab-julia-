@@ -120,8 +120,6 @@ function check_and_setup()
         % Run setup
         if exist(fullfile(project_root, 'mjse_setup.m'), 'file')
             run(fullfile(project_root, 'mjse_setup.m'));
-        elseif exist(fullfile(project_root, 'setup.m'), 'file')
-            run(fullfile(project_root, 'setup.m'));
         else
             error('jlcall:SetupNotFound', 'Setup script not found');
         end

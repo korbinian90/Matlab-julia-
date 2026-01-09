@@ -234,7 +234,7 @@ classdef MJSE < handle
             
             if ~exist(jar_path, 'file')
                 error('MJSE:JarNotFound', ...
-                    'MJSEBridge.jar not found at: %s\nRun setup.m to build the bridge.', jar_path);
+                    'MJSEBridge.jar not found at: %s\nRun mjse_setup to build the bridge.', jar_path);
             end
             
             % Add JAR to dynamic Java classpath if not already present
@@ -375,7 +375,7 @@ classdef MJSE < handle
             end
             
             error('MJSE:JuliaNotFound', ...
-                'Julia not found. Run setup.m to download portable Julia or install Julia 1.12+');
+                'Julia not found. Run mjse_setup to download portable Julia or install Julia 1.12+');
         end
         
         function cleanup(obj)
