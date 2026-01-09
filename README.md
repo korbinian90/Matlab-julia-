@@ -82,7 +82,7 @@ No manual setup required - just clone and call `jlcall('start')`!
 If you want to run setup manually (not needed for normal use):
 
 ```matlab
-mjse_setup  % Downloads Julia, builds bridge, renames Linux libs
+mjse_setup  % Downloads Julia, builds bridge, sets up environment
 ```
 
 ## Advanced Usage
@@ -99,12 +99,12 @@ engine.shutdown();
 
 ### Linux Library Isolation
 
-On Linux, MJSE automatically renames Julia's C++ runtime libraries with `_mjse.so` suffix to prevent conflicts with MATLAB's bundled libraries:
-- `libstdc++.so.6` → `libstdc++_mjse.so.6`
-- `libgcc_s.so.1` → `libgcc_s_mjse.so.1`  
-- `libgfortran.so.5` → `libgfortran_mjse.so.5`
+On Linux, MJSE uses `LD_LIBRARY_PATH` to prioritize Julia's own libraries when launching the Julia worker, preventing conflicts with MATLAB's bundled libraries. This approach:
+- Does not modify Julia's library files (no renaming needed)
+- Allows Julia to use its own `libstdc++.so.6`, `libgcc_s.so.1`, and `libgfortran.so.5`
+- Prevents MATLAB library hijacking without breaking Julia's internal dependencies
 
-This is done automatically during setup (controlled by `MJSE_SHADOW_LIBS=1` environment variable in CI).
+The `MJSE_SHADOW_LIBS=1` environment variable in CI indicates library isolation is active (via `LD_LIBRARY_PATH`).
 
 ## Development Status
 

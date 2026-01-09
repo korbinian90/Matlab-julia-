@@ -277,8 +277,17 @@ classdef MJSE < handle
                 obj.julia_process = System.Diagnostics.Process.Start('cmd.exe', ...
                     sprintf('/c %s', julia_cmd));
             else
+                % Set LD_LIBRARY_PATH to prioritize Julia's libraries over MATLAB's
+                % This prevents library conflicts without needing to rename files
+                julia_lib_path = fullfile(fileparts(fileparts(julia_bin)), 'lib', 'julia');
+                if exist(julia_lib_path, 'dir')
+                    env_prefix = sprintf('LD_LIBRARY_PATH="%s:$LD_LIBRARY_PATH" ', julia_lib_path);
+                else
+                    env_prefix = '';
+                end
+                
                 % Use system with & to run in background
-                cmd = sprintf('%s > /tmp/mjse_worker.log 2>&1 &', julia_cmd);
+                cmd = sprintf('%s%s > /tmp/mjse_worker.log 2>&1 &', env_prefix, julia_cmd);
                 system(cmd);
             end
             

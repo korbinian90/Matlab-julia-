@@ -31,13 +31,14 @@ function mjse_setup()
         fprintf('Step 1: Portable Julia already present, skipping download\n');
     end
     
-    % Step 2: Library renaming on Linux
+    % Step 2: Library renaming on Linux (typically not needed)
     shadow_libs = getenv('MJSE_SHADOW_LIBS');
     if ~isempty(shadow_libs) && strcmp(shadow_libs, '1') && isunix && ~ismac
-        fprintf('\nStep 2: Renaming Linux libraries with _mjse.so suffix...\n');
-        rename_linux_libs(julia_dir);
+        fprintf('\nStep 2: Library isolation via LD_LIBRARY_PATH (skipping renaming)...\n');
+        fprintf('  Note: Library renaming disabled - it breaks Julia dependencies\n');
+        fprintf('  Julia will use its own libraries via LD_LIBRARY_PATH when launched\n');
     else
-        fprintf('\nStep 2: Skipping library renaming (not needed or not enabled)\n');
+        fprintf('\nStep 2: Skipping library modifications (not needed)\n');
     end
     
     % Step 3: Build Java bridge
@@ -141,61 +142,6 @@ function download_julia(julia_dir)
         warning('MJSE:ExtractionFailed', 'Failed to extract Julia: %s', ME.message);
         fprintf('  Please extract manually to: %s\n', julia_dir);
     end
-end
-
-function rename_linux_libs(julia_dir)
-    % Rename Linux libraries to prevent MATLAB library hijacking
-    %
-    % Instead of using patchelf to modify rpath, we rename the libraries
-    % with _mjse.so suffix to completely isolate them from MATLAB's libs
-    
-    fprintf('  Renaming Linux libraries to *_mjse.so...\n');
-    
-    % Libraries to rename
-    libs_to_rename = {'libstdc++.so.6', 'libgcc_s.so.1', 'libgfortran.so.5'};
-    
-    % Find Julia libraries
-    julia_lib_dir = fullfile(julia_dir, 'lib', 'julia');
-    
-    if ~exist(julia_lib_dir, 'dir')
-        fprintf('  Julia lib directory not found, skipping\n');
-        return;
-    end
-    
-    fprintf('  Renaming libraries in %s\n', julia_lib_dir);
-    renamed_count = 0;
-    
-    for i = 1:length(libs_to_rename)
-        lib_name = libs_to_rename{i};
-        lib_path = fullfile(julia_lib_dir, lib_name);
-        
-        if exist(lib_path, 'file')
-            % Create new name with _mjse suffix before .so
-            [~, base_name, ~] = fileparts(lib_name);
-            % Extract version suffix if present (e.g., .6 from libstdc++.so.6)
-            parts = strsplit(lib_name, '.');
-            if length(parts) > 2
-                % Has version: libstdc++.so.6 -> libstdc++_mjse.so.6
-                new_name = [parts{1}, '_mjse.', strjoin(parts(2:end), '.')];
-            else
-                % No version: libfoo.so -> libfoo_mjse.so
-                new_name = [base_name, '_mjse.so'];
-            end
-            
-            new_path = fullfile(julia_lib_dir, new_name);
-            
-            % Rename the file
-            try
-                movefile(lib_path, new_path);
-                fprintf('    Renamed %s -> %s\n', lib_name, new_name);
-                renamed_count = renamed_count + 1;
-            catch ME
-                warning('MJSE:RenameFailed', 'Failed to rename %s: %s', lib_name, ME.message);
-            end
-        end
-    end
-    
-    fprintf('  Library renaming complete (%d files renamed)\n', renamed_count);
 end
 
 function build_java_bridge()
