@@ -26,42 +26,13 @@ jobs:
       with:
         release: R2024b
     
-    - name: Set up Julia
-      uses: julia-actions/setup-julia@v2
-      with:
-        version: '1.12'
-    
-    - name: Install patchelf (Linux only)
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y patchelf
-    
-    - name: Set up Java
+    - name: Set up Java (for Java bridge compilation)
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '11'
     
-    - name: Build Java bridge
-      shell: bash
-      run: |
-        cd m_src/mjse
-        javac Bridge.java
-        jar cf ../MJSEBridge.jar -C . .
-        cd ../..
-    
-    - name: Verify Java bridge
-      shell: bash
-      run: |
-        ls -lh m_src/MJSEBridge.jar
-    
-    - name: Set up Julia environment
-      shell: bash
-      run: |
-        julia --project=jl_src -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
-    
-    - name: Run MATLAB tests (with MJSE_SHADOW_LIBS on Linux)
+    - name: Run MATLAB tests (auto-setup handles Julia download and bridge build)
       if: runner.os == 'Linux'
       uses: matlab-actions/run-command@v2
       env:
@@ -72,7 +43,7 @@ jobs:
           addpath('tests');
           test_roundtrip();
     
-    - name: Run MATLAB tests (macOS/Windows)
+    - name: Run MATLAB tests (auto-setup handles Julia download and bridge build)
       if: runner.os != 'Linux'
       uses: matlab-actions/run-command@v2
       with:

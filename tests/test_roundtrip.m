@@ -2,7 +2,7 @@ function test_roundtrip()
 % TEST_ROUNDTRIP Test MJSE roundtrip communication with latency measurement
 %
 % This test exercises the MJSE engine by:
-% 1. Initializing the engine
+% 1. Initializing the engine (auto-setup on first run)
 % 2. Sending a test matrix to Julia
 % 3. Receiving the echoed data back
 % 4. Reporting latency
@@ -20,17 +20,34 @@ function test_roundtrip()
     data_size_mb = numel(test_data) * 8 / (1024 * 1024);
     fprintf('Test data: %dx%d double matrix (%.2f MB)\n', test_size, test_size, data_size_mb);
     
-    % Initialize MJSE engine
-    fprintf('\nInitializing MJSE engine...\n');
-    engine = MJSE();
+    % Initialize MJSE engine using jlcall (auto-setup on first run)
+    fprintf('\nStarting Julia daemon (auto-setup if needed)...\n');
     
     try
-        % Start the engine
-        engine.start();
+        % Start the daemon (auto-setup happens here)
+        jlcall('start');
         
         fprintf('\nTesting roundtrip communication...\n');
         
+        % Get the underlying engine for direct testing
+        % Note: In production, you'd use jlcall('functionname', args)
+        % But for this test we need direct engine access
+        engine_state = evalin('base', 'whos(''jlcall'')');
+        if isempty(engine_state)
+            % Create engine directly if jlcall persistent state not accessible
+            engine = MJSE();
+            engine.start();
+            use_direct_engine = true;
+        else
+            % Access via reflection (not ideal but works for testing)
+            % For now, create a separate engine for testing
+            engine = MJSE();
+            engine.start();
+            use_direct_engine = true;
+        end
+        
         % Perform roundtrip test
+        tic;
         latency = engine.test_roundtrip(test_data);
         
         % Report results
@@ -47,13 +64,25 @@ function test_roundtrip()
         disp(ME.stack);
         
         % Clean up on error
-        engine.shutdown();
+        try
+            jlcall('stop');
+        catch
+        end
+        if exist('engine', 'var') && exist('use_direct_engine', 'var') && use_direct_engine
+            try
+                engine.shutdown();
+            catch
+            end
+        end
         rethrow(ME);
     end
     
     % Clean shutdown
-    fprintf('\nShutting down engine...\n');
-    engine.shutdown();
+    fprintf('\nShutting down...\n');
+    if exist('engine', 'var') && exist('use_direct_engine', 'var') && use_direct_engine
+        engine.shutdown();
+    end
+    jlcall('stop');
     
     fprintf('\n=== Test Complete ===\n');
 end
