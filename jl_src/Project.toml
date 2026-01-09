@@ -1,7 +1,6 @@
-name = "MJSEWorker"
-uuid = "12345678-1234-1234-1234-123456789abc"
-authors = ["MJSE Team"]
-version = "0.1.0"
+# Julia Project for MJSE Worker
+# This is a minimal project file that just lists dependencies
+# The worker is loaded via include() not as a package
 
 [deps]
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
