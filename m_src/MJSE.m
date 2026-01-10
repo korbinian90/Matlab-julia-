@@ -257,19 +257,45 @@ classdef MJSE < handle
             
             % Try to create bridge instance
             try
+                % Try method 1: Direct instantiation
                 obj.bridge = mjse.Bridge();
                 fprintf('Java bridge loaded successfully\n');
-            catch ME
-                fprintf('Failed to instantiate mjse.Bridge\n');
-                fprintf('Error: %s\n', ME.message);
+            catch ME1
+                fprintf('Method 1 (direct instantiation) failed: %s\n', ME1.message);
                 
-                % Additional diagnostics
-                fprintf('\nDebugging information:\n');
-                fprintf('Trying to list classes in JAR...\n');
-                [~, jar_contents] = system(sprintf('jar tf "%s"', jar_path));
-                fprintf('JAR contents:\n%s\n', jar_contents);
-                
-                rethrow(ME);
+                try
+                    % Try method 2: Using javaObject
+                    obj.bridge = javaObject('mjse.Bridge');
+                    fprintf('Java bridge loaded successfully (via javaObject)\n');
+                catch ME2
+                    fprintf('Method 2 (javaObject) failed: %s\n', ME2.message);
+                    
+                    try
+                        % Try method 3: Import first, then instantiate
+                        import mjse.*;
+                        obj.bridge = Bridge();
+                        fprintf('Java bridge loaded successfully (via import)\n');
+                    catch ME3
+                        fprintf('Method 3 (import) failed: %s\n', ME3.message);
+                        
+                        % Additional diagnostics
+                        fprintf('\nDebugging information:\n');
+                        fprintf('Trying to list classes in JAR...\n');
+                        [~, jar_contents] = system(sprintf('jar tf "%s"', jar_path));
+                        fprintf('JAR contents:\n%s\n', jar_contents);
+                        
+                        % Try to check if class exists in classpath
+                        fprintf('\nChecking if class exists...\n');
+                        try
+                            which('mjse.Bridge', '-all')
+                        catch
+                            fprintf('which command failed\n');
+                        end
+                        
+                        % Rethrow the first error
+                        rethrow(ME1);
+                    end
+                end
             end
         end
         
