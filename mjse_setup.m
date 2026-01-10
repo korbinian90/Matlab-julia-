@@ -174,11 +174,9 @@ function apply_patchelf_shadowing(julia_dir)
             continue;
         end
         
-        % Create shadowed version (rename to *_mjse.so)
+        % Physical rename: mv lib -> lib_mjse
         % Handle multi-part extensions like .so.6
         % libstdc++.so.6 -> libstdc++_mjse.so.6
-        [~, base_name] = fileparts(lib_name);
-        % Find the first .so occurrence
         so_idx = strfind(lib_name, '.so');
         if ~isempty(so_idx)
             % Split at first .so
@@ -186,52 +184,63 @@ function apply_patchelf_shadowing(julia_dir)
             suffix = lib_name(so_idx(1):end);   % e.g., '.so.6'
             shadowed_name = [prefix '_mjse' suffix];
         else
+            [~, base_name] = fileparts(lib_name);
             shadowed_name = [base_name '_mjse'];
         end
         shadowed_path = fullfile(julia_lib, shadowed_name);
         
-        if ~exist(shadowed_path, 'file')
-            fprintf('    Shadowing %s -> %s\n', lib_name, shadowed_name);
-            copyfile(lib_path, shadowed_path);
-            % Keep original as symlink to shadowed version
-            % This way Julia's internal references still work
-            delete(lib_path);
-            if isunix
-                % Create symlink: original -> shadowed
-                system(sprintf('ln -s "%s" "%s"', shadowed_name, lib_path));
-            end
+        % Physically rename the library (no symlinks)
+        if exist(lib_path, 'file') && ~exist(shadowed_path, 'file')
+            fprintf('    Renaming %s -> %s\n', lib_name, shadowed_name);
+            movefile(lib_path, shadowed_path);
         end
     end
     
-    % Update libjulia.so.1.12 to use shadowed libraries
-    libjulia = fullfile(julia_lib, 'libjulia.so.1.12');
-    if exist(libjulia, 'file')
-        fprintf('    Updating libjulia.so.1.12 dependencies...\n');
-        for i = 1:length(libs_to_shadow)
-            lib_name = libs_to_shadow{i};
-            % Handle multi-part extensions
-            so_idx = strfind(lib_name, '.so');
-            if ~isempty(so_idx)
-                prefix = lib_name(1:so_idx(1)-1);
-                suffix = lib_name(so_idx(1):end);
-                shadowed_name = [prefix '_mjse' suffix];
-            else
-                [~, base_name] = fileparts(lib_name);
-                shadowed_name = [base_name '_mjse'];
+    % Patch Julia binaries to use renamed libraries
+    % Target both libjulia-internal.so.1.12 and libjulia.so.1.12
+    julia_libs_to_patch = {
+        fullfile(julia_lib, 'libjulia-internal.so.1.12');
+        fullfile(julia_lib, 'libjulia.so.1.12')
+    };
+    
+    for j = 1:length(julia_libs_to_patch)
+        target_lib = julia_libs_to_patch{j};
+        if exist(target_lib, 'file')
+            [~, target_name] = fileparts(target_lib);
+            fprintf('    Patching %s dependencies...\n', target_name);
+            
+            for i = 1:length(libs_to_shadow)
+                lib_name = libs_to_shadow{i};
+                % Compute shadowed name
+                so_idx = strfind(lib_name, '.so');
+                if ~isempty(so_idx)
+                    prefix = lib_name(1:so_idx(1)-1);
+                    suffix = lib_name(so_idx(1):end);
+                    shadowed_name = [prefix '_mjse' suffix];
+                else
+                    [~, base_name] = fileparts(lib_name);
+                    shadowed_name = [base_name '_mjse'];
+                end
+                
+                % Replace dependency
+                cmd = sprintf('patchelf --replace-needed %s %s "%s" 2>/dev/null', ...
+                    lib_name, shadowed_name, target_lib);
+                system(cmd);
             end
             
-            cmd = sprintf('patchelf --replace-needed %s %s "%s" 2>/dev/null', ...
-                lib_name, shadowed_name, libjulia);
+            % Set RPATH to prioritize Julia's lib directories
+            cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', ...
+                target_lib);
             system(cmd);
         end
-        
-        % Set RPATH to ensure Julia finds libs in its own directory
-        cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s"', libjulia);
-        system(cmd);
-        
-        % Also update the julia binary
-        julia_bin = fullfile(julia_dir, 'bin', 'julia');
-        cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', julia_bin);
+    end
+    
+    % Patch the julia binary executable
+    julia_bin = fullfile(julia_dir, 'bin', 'julia');
+    if exist(julia_bin, 'file')
+        fprintf('    Patching julia binary RPATH...\n');
+        cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', ...
+            julia_bin);
         system(cmd);
     end
     
