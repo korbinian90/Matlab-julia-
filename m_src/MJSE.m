@@ -303,7 +303,7 @@ classdef MJSE < handle
             max_attempts = 10;
             for attempt = 1:max_attempts
                 try
-                    obj.tcp_client = tcpclient('127.0.0.1', obj.tcp_port, 'Timeout', 5);
+                    obj.tcp_client = tcpclient('127.0.0.1', obj.tcp_port, 'Timeout', 60);
                     fprintf('TCP connected to 127.0.0.1:%d\n', obj.tcp_port);
                     return;
                 catch
