@@ -277,12 +277,22 @@ classdef MJSE < handle
             catch ME1
                 fprintf('Method 1 (direct instantiation) failed: %s\n', ME1.message);
                 
+                % Clear Java cache before trying next method to reset classloader
+                fprintf('Clearing Java cache before trying method 2...\n');
+                clear java;
+                pause(0.1);
+                
                 try
                     % Try method 2: Using javaObject
                     obj.bridge = javaObject('mjse.Bridge');
                     fprintf('Java bridge loaded successfully (via javaObject)\n');
                 catch ME2
                     fprintf('Method 2 (javaObject) failed: %s\n', ME2.message);
+                    
+                    % Clear Java cache before trying next method to reset classloader
+                    fprintf('Clearing Java cache before trying method 3...\n');
+                    clear java;
+                    pause(0.1);
                     
                     try
                         % Try method 3: Import first, then instantiate
