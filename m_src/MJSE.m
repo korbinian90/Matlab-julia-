@@ -181,27 +181,34 @@ classdef MJSE < handle
             % Worker script path
             worker_script = fullfile(repo_root, 'jl_src', 'MJSEWorker.jl');
             
+            % Log file for debugging
+            log_file = fullfile(tempdir, sprintf('mjse_worker_%d.log', obj.tcp_port));
+            
             % Build command with environment scrubbing on Linux (prevents MATLAB interference)
             if isunix && ~ismac
                 % Use 'env -u' to clear LD_LIBRARY_PATH and LD_PRELOAD
                 % Julia will use its own shadowed libraries via RPATH
-                cmd = sprintf('env -u LD_LIBRARY_PATH -u LD_PRELOAD "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d &', ...
+                % Redirect output to log file for debugging
+                cmd = sprintf('env -u LD_LIBRARY_PATH -u LD_PRELOAD "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > "%s" 2>&1 &', ...
                     julia_exe, fullfile(repo_root, 'jl_src'), ...
-                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
+                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'), log_file);
             elseif ispc
                 % Windows: Use 'start' command to run in background without window
                 % Note: /B runs without new window, first "" is window title (required)
-                cmd = sprintf('start /B "Julia Worker" "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d', ...
+                % Redirect output to log file for debugging
+                cmd = sprintf('start /B "Julia Worker" "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > "%s" 2>&1', ...
                     julia_exe, fullfile(repo_root, 'jl_src'), ...
-                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
+                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'), log_file);
             else
                 % macOS: Use 'nohup' with '&' for reliable background execution
-                cmd = sprintf('nohup "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > /dev/null 2>&1 &', ...
+                % Redirect output to log file for debugging
+                cmd = sprintf('nohup "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > "%s" 2>&1 &', ...
                     julia_exe, fullfile(repo_root, 'jl_src'), ...
-                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
+                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'), log_file);
             end
             
             fprintf('Launching Julia worker...\n');
+            fprintf('Julia worker log: %s\n', log_file);
             if ispc || ismac
                 % On Windows and macOS, background launch returns immediately
                 % (Windows: start command, macOS: nohup with &)
@@ -212,6 +219,14 @@ classdef MJSE < handle
                 % Linux: env -u with & also returns immediately, but faster startup
                 [~, ~] = system(cmd);
                 pause(2);
+            end
+            
+            % Display log file contents if it exists (for CI debugging)
+            if isfile(log_file)
+                fprintf('--- Julia Worker Log ---\n');
+                log_content = fileread(log_file);
+                fprintf('%s\n', log_content);
+                fprintf('--- End Julia Worker Log ---\n');
             end
         end
         
