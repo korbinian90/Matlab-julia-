@@ -179,6 +179,7 @@ function apply_patchelf_shadowing(julia_dir)
         lib_path = fullfile(julia_lib_julia, lib_name);
         
         if ~exist(lib_path, 'file')
+            fprintf('      Skip %s (not found)\n', lib_name);
             continue;
         end
         
@@ -199,27 +200,32 @@ function apply_patchelf_shadowing(julia_dir)
         
         % Copy to shadowed name, then move original to backup
         if exist(lib_path, 'file') && ~exist(shadowed_path, 'file')
-            fprintf('    Creating shadowed version: %s\n', shadowed_name);
             copyfile(lib_path, shadowed_path);
+            fprintf('      Created %s\n', shadowed_name);
             % Move original to backup (after copy, so patching can reference it)
             backup_path = fullfile(backup_dir, lib_name);
             if ~exist(backup_path, 'file')
                 movefile(lib_path, backup_path);
+                fprintf('      Backed up %s\n', lib_name);
             end
+        elseif exist(shadowed_path, 'file')
+            fprintf('      %s already exists\n', shadowed_name);
         end
     end
     
     % Step 2: Recursively find ALL .so files in entire lib/ tree
-    fprintf('    Scanning for .so files in %s...\n', julia_lib);
+    fprintf('    Scanning for library files in %s...\n', julia_lib);
     all_so_files = find_so_files_recursive(julia_lib);
     
     fprintf('    Found %d library files to patch\n', length(all_so_files));
     
     % Step 3: Patch ALL .so files to use renamed libraries
+    patched_count = 0;
     for j = 1:length(all_so_files)
         target_lib = all_so_files{j};
         
         % Patch dependencies for each .so file
+        patched_this = false;
         for i = 1:length(libs_to_shadow)
             lib_name = libs_to_shadow{i};
             % Compute shadowed name
@@ -236,12 +242,22 @@ function apply_patchelf_shadowing(julia_dir)
             % Replace dependency (silently - many won't have these deps)
             cmd = sprintf('patchelf --replace-needed %s %s "%s" 2>/dev/null', ...
                 lib_name, shadowed_name, target_lib);
-            system(cmd);
+            [status, ~] = system(cmd);
+            if status == 0
+                patched_this = true;
+            end
+        end
+        
+        if patched_this
+            patched_count = patched_count + 1;
         end
         
         % Set RPATH to prioritize Julia's lib directories
         cmd = sprintf('patchelf --set-rpath ''$ORIGIN:$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', ...
             target_lib);
+        system(cmd);
+    end
+    fprintf('    Patched %d files with new library references\n', patched_count);
         system(cmd);
     end
     
@@ -258,22 +274,39 @@ function apply_patchelf_shadowing(julia_dir)
     fprintf('    Verifying Julia installation...\n');
     [status, output] = system(sprintf('"%s" -e "println(\"Julia OK\")" 2>&1', julia_bin));
     if status == 0 && contains(output, 'Julia OK')
-        fprintf('  ✓ Julia verification passed\n');
+        fprintf('      ✓ Julia verification PASSED\n');
     else
         warning('MJSE:JuliaVerificationFailed', 'Julia verification failed:\n%s', output);
         
-        % Run ldd to diagnose missing dependencies
-        fprintf('  Running ldd diagnostics to find missing dependencies...\n');
-        [~, ldd_check] = system(sprintf('find "%s" -name "*.so*" -exec ldd {} + 2>/dev/null | grep "not found"', julia_lib));
+        % Run comprehensive ldd diagnostics
+        fprintf('\n    === LDD DIAGNOSTICS ===\n');
+        fprintf('    Checking Julia binary dependencies:\n');
+        [~, bin_ldd] = system(sprintf('ldd "%s" 2>&1 | head -20', julia_bin));
+        fprintf('%s\n', bin_ldd);
+        
+        fprintf('    Checking for "not found" in all .so files:\n');
+        [~, ldd_check] = system(sprintf('find "%s" -name "*.so*" -exec ldd {} + 2>/dev/null | grep "not found" | head -10', julia_lib));
         if ~isempty(strtrim(ldd_check))
-            fprintf('  Missing dependencies found:\n%s\n', ldd_check);
+            fprintf('%s\n', ldd_check);
         else
-            fprintf('  No missing dependencies found via ldd\n');
+            fprintf('      No "not found" dependencies detected\n');
         end
         
-        % Also check the julia binary itself
-        [~, bin_ldd] = system(sprintf('ldd "%s" 2>&1', julia_bin));
-        fprintf('  Julia binary dependencies:\n%s\n', bin_ldd);
+        fprintf('    Checking if shadowed libraries exist:\n');
+        for i = 1:length(libs_to_shadow)
+            lib_name = libs_to_shadow{i};
+            so_idx = strfind(lib_name, '.so');
+            prefix = lib_name(1:so_idx(1)-1);
+            suffix = lib_name(so_idx(1):end);
+            shadowed_name = [prefix '_mjse' suffix];
+            shadowed_path = fullfile(julia_lib_julia, shadowed_name);
+            if exist(shadowed_path, 'file')
+                fprintf('      ✓ %s exists\n', shadowed_name);
+            else
+                fprintf('      ✗ %s MISSING\n', shadowed_name);
+            end
+        end
+        fprintf('    === END DIAGNOSTICS ===\n\n');
     end
     
     fprintf('  Library shadowing complete - Julia isolated from MATLAB libs\n');
