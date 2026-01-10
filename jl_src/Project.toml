@@ -1,0 +1,11 @@
+# Julia Project for MJSE Worker
+# This is a minimal project file that just lists dependencies
+# The worker is loaded via include() not as a package
+
+[deps]
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+
+[compat]
+julia = "1.12"

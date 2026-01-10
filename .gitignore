@@ -1,0 +1,27 @@
+# Portable Julia Runtime
+external/
+
+# MATLAB artifacts
+*.asv
+*.mex*
+
+# Julia artifacts
+jl_src/Manifest.toml
+
+# Temporary shared memory files
+*.dat
+
+# Log files
+*.log
+/tmp/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+*~
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
