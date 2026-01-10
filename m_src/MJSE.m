@@ -181,11 +181,12 @@ classdef MJSE < handle
             % Worker script path
             worker_script = fullfile(repo_root, 'jl_src', 'MJSEWorker.jl');
             
-            % Build command with LD_LIBRARY_PATH isolation on Linux
+            % Build command with environment scrubbing on Linux (prevents MATLAB interference)
             if isunix && ~ismac
-                julia_lib = fullfile(julia_dir, 'lib', 'julia');
-                cmd = sprintf('LD_LIBRARY_PATH="%s:$LD_LIBRARY_PATH" "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d &', ...
-                    julia_lib, julia_exe, fullfile(repo_root, 'jl_src'), ...
+                % Use 'env -u' to clear LD_LIBRARY_PATH and LD_PRELOAD
+                % Julia will use its own shadowed libraries via RPATH
+                cmd = sprintf('env -u LD_LIBRARY_PATH -u LD_PRELOAD "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d &', ...
+                    julia_exe, fullfile(repo_root, 'jl_src'), ...
                     worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
             else
                 cmd = sprintf('"%s" --project="%s" "%s" --port %d --shm "%s" --pid %d &', ...

@@ -29,12 +29,12 @@ function mjse_setup()
         fprintf('Step 1: Portable Julia already present, skipping download\n');
     end
     
-    % Step 2: LD_LIBRARY_PATH setup message (Linux only)
+    % Step 2: Apply patchelf shadowing (Linux only)
     if isunix && ~ismac
-        fprintf('\nStep 2: Library isolation configured via LD_LIBRARY_PATH\n');
-        fprintf('  Julia will use its own libraries when launched\n');
+        fprintf('\nStep 2: Applying patchelf library shadowing (Linux stability)...\n');
+        apply_patchelf_shadowing(julia_dir);
     else
-        fprintf('\nStep 2: No library isolation needed on this platform\n');
+        fprintf('\nStep 2: No library shadowing needed on this platform\n');
     end
     
     % Step 3: Prewarm Julia cache
@@ -135,6 +135,69 @@ function download_julia(julia_dir)
         warning('MJSE:ExtractionFailed', 'Failed to extract Julia: %s', ME.message);
         fprintf('  Please extract manually to: %s\n', julia_dir);
     end
+end
+
+function apply_patchelf_shadowing(julia_dir)
+    % Apply patchelf library shadowing to prevent MATLAB conflicts (Linux only)
+    
+    julia_lib = fullfile(julia_dir, 'lib', 'julia');
+    
+    % Check if patchelf is available
+    [status, ~] = system('which patchelf');
+    if status ~= 0
+        warning('MJSE:PatchelfNotFound', 'patchelf not found. Install with: sudo apt-get install patchelf');
+        fprintf('  Skipping library shadowing - may experience segfaults on Linux\n');
+        return;
+    end
+    
+    % Libraries to shadow
+    libs_to_shadow = {'libstdc++.so.6', 'libgcc_s.so.1', 'libgfortran.so.5'};
+    
+    for i = 1:length(libs_to_shadow)
+        lib_name = libs_to_shadow{i};
+        lib_path = fullfile(julia_lib, lib_name);
+        
+        if ~exist(lib_path, 'file')
+            continue;
+        end
+        
+        % Create shadowed version (rename to *_mjse.so)
+        [~, name, ext] = fileparts(lib_name);
+        shadowed_name = [name '_mjse' ext];
+        shadowed_path = fullfile(julia_lib, shadowed_name);
+        
+        if ~exist(shadowed_path, 'file')
+            fprintf('    Shadowing %s -> %s\n', lib_name, shadowed_name);
+            copyfile(lib_path, shadowed_path);
+            delete(lib_path);  % Remove original
+        end
+    end
+    
+    % Update libjulia.so.1.12 to use shadowed libraries
+    libjulia = fullfile(julia_lib, 'libjulia.so.1.12');
+    if exist(libjulia, 'file')
+        fprintf('    Updating libjulia.so.1.12 dependencies...\n');
+        for i = 1:length(libs_to_shadow)
+            lib_name = libs_to_shadow{i};
+            [~, name, ext] = fileparts(lib_name);
+            shadowed_name = [name '_mjse' ext];
+            
+            cmd = sprintf('patchelf --replace-needed %s %s "%s" 2>/dev/null', ...
+                lib_name, shadowed_name, libjulia);
+            system(cmd);
+        end
+        
+        % Set RPATH to ensure Julia finds libs in its own directory
+        cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s"', libjulia);
+        system(cmd);
+        
+        % Also update the julia binary
+        julia_bin = fullfile(julia_dir, 'bin', 'julia');
+        cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', julia_bin);
+        system(cmd);
+    end
+    
+    fprintf('  Library shadowing complete - Julia isolated from MATLAB libs\n');
 end
 
 function prewarm_julia_cache(julia_dir)

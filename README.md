@@ -88,10 +88,63 @@ test_roundtrip();  % Tests 100MB roundtrip with zero-error verification
 
 ## Linux Library Isolation
 
-On Linux, MJSE uses `LD_LIBRARY_PATH` to prioritize Julia's own libraries when launching the Julia worker, preventing conflicts with MATLAB's bundled libraries. This approach:
-- Does not modify Julia's library files (no renaming needed)
-- Allows Julia to use its own `libstdc++.so.6`, `libgcc_s.so.1`, and `libgfortran.so.5`
-- Prevents MATLAB library hijacking without breaking Julia's internal dependencies
+On Linux, MJSE uses **patchelf library shadowing** to prevent MATLAB library conflicts. This provides production-grade stability:
+
+### How It Works
+
+1. **Library Renaming**: During setup, Julia's problematic libraries are renamed:
+   - `libstdc++.so.6` → `libstdc++_mjse.so.6`
+   - `libgcc_s.so.1` → `libgcc_s_mjse.so.1`
+   - `libgfortran.so.5` → `libgfortran_mjse.so.5`
+
+2. **Dependency Updates**: The `libjulia.so.1.12` binary is patched using `patchelf --replace-needed` to reference the renamed libraries.
+
+3. **RPATH Configuration**: Both `libjulia.so.1.12` and the `julia` binary have their RPATH set to `$ORIGIN/../lib:$ORIGIN/../lib/julia`, ensuring Julia always uses its own libraries.
+
+4. **Environment Scrubbing**: Julia is launched with `env -u LD_LIBRARY_PATH -u LD_PRELOAD` to prevent MATLAB's environment from interfering.
+
+### Benefits
+
+- **Immunity to MATLAB Conflicts**: Julia will never load MATLAB's incompatible versions of `libstdc++`, `libgcc_s`, or `libgfortran`
+- **No Runtime Overhead**: Library paths resolved at load time via RPATH
+- **Stable Across Systems**: Works regardless of system library versions
+- **No Julia Modification**: Julia's internal dependencies remain unchanged
+
+### Requirements
+
+- **patchelf** must be installed: `sudo apt-get install patchelf`
+- Automatically applied during `mjse_setup` on Linux
+- No action needed on macOS or Windows
+
+## Atomic Memory Synchronization
+
+The StateFlag protocol ensures data integrity even with concurrent access:
+
+### Protocol Sequence
+
+1. **MATLAB** writes data to shared memory buffer
+2. **MATLAB** sets StateFlag = 1 (READY)  
+3. **MATLAB** sends TCP "PROCESS" command
+4. **Julia** receives TCP command
+5. **Julia** spin-waits until StateFlag == 1 (prevents torn reads)
+6. **Julia** processes data from shared memory
+7. **Julia** sets StateFlag = 3 (DONE)
+8. **MATLAB** spin-waits until StateFlag == 3
+9. **MATLAB** reads result from shared memory
+
+This prevents race conditions where TCP arrives before memory writes are visible to Julia.
+
+## Robust Cleanup
+
+### Julia-Side
+- **Heartbeat Monitor**: Background task checks MATLAB PID every 5 seconds
+- **Auto-Exit**: If MATLAB terminates, Julia worker exits gracefully
+- **Prevents Orphans**: No orphaned Julia processes after MATLAB crashes
+
+### MATLAB-Side
+- **onCleanup Handler**: Automatically sends SHUTDOWN command
+- **Resource Cleanup**: Deletes shared memory file on exit
+- **Graceful Termination**: Waits for Julia acknowledgment before closing
 
 ## Development Status
 

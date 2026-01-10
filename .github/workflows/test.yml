@@ -21,6 +21,10 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     
+    - name: Install patchelf (Linux only)
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y patchelf
+    
     - name: Set up MATLAB
       uses: matlab-actions/setup-matlab@v2
       with:
