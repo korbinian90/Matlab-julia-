@@ -237,16 +237,40 @@ classdef MJSE < handle
                     'MJSEBridge.jar not found at: %s\nRun mjse_setup to build the bridge.', jar_path);
             end
             
+            fprintf('Loading Java bridge from: %s\n', jar_path);
+            
             % Add JAR to dynamic Java classpath if not already present
             java_classpath = javaclasspath('-dynamic');
             if ~any(strcmp(java_classpath, jar_path))
                 javaaddpath(jar_path);
+                fprintf('Added JAR to Java classpath\n');
+            else
+                fprintf('JAR already in Java classpath\n');
             end
             
-            % Create bridge instance
-            obj.bridge = mjse.Bridge();
+            % Verify JAR is in classpath
+            java_classpath = javaclasspath('-dynamic');
+            fprintf('Current dynamic Java classpath:\n');
+            for i = 1:length(java_classpath)
+                fprintf('  %s\n', java_classpath{i});
+            end
             
-            fprintf('Java bridge loaded\n');
+            % Try to create bridge instance
+            try
+                obj.bridge = mjse.Bridge();
+                fprintf('Java bridge loaded successfully\n');
+            catch ME
+                fprintf('Failed to instantiate mjse.Bridge\n');
+                fprintf('Error: %s\n', ME.message);
+                
+                % Additional diagnostics
+                fprintf('\nDebugging information:\n');
+                fprintf('Trying to list classes in JAR...\n');
+                [~, jar_contents] = system(sprintf('jar tf "%s"', jar_path));
+                fprintf('JAR contents:\n%s\n', jar_contents);
+                
+                rethrow(ME);
+            end
         end
         
         function launch_julia_daemon(obj)
