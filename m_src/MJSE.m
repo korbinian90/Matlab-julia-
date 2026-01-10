@@ -202,17 +202,15 @@ classdef MJSE < handle
             end
             
             fprintf('Launching Julia worker...\n');
-            if ispc
-                % On Windows, start returns immediately, status is always 0
+            if ispc || ismac
+                % On Windows and macOS, background launch returns immediately
+                % (Windows: start command, macOS: nohup with &)
                 [~, ~] = system(cmd);
-                % Give Julia more time to start on Windows
+                % Give Julia more time to start (macOS/Windows have slower startup)
                 pause(5);
             else
-                [status, ~] = system(cmd);
-                if status ~= 0
-                    error('MJSE:LaunchFailed', 'Failed to launch Julia worker');
-                end
-                % Give Julia time to start
+                % Linux: env -u with & also returns immediately, but faster startup
+                [~, ~] = system(cmd);
                 pause(2);
             end
         end
