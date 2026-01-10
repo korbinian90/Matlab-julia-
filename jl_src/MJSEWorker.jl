@@ -148,9 +148,21 @@ end
 function handle_client(state::WorkerState)
     """Handle client connection and commands"""
     try
+        println(stderr, "=== handle_client: About to call accept() ===")
+        flush(stderr)
         @info "Waiting for client connection..."
+        flush(stdout)
+        flush(stderr)
+        
+        println(stderr, "=== Calling accept() now ===")
+        flush(stderr)
         state.client = accept(state.server)
+        println(stderr, "=== accept() returned successfully ===")
+        flush(stderr)
+        
         @info "Client connected"
+        flush(stdout)
+        flush(stderr)
         
         while state.running
             # Check for incoming commands
@@ -332,11 +344,15 @@ function main()
         flush(stdout)
         flush(stderr)
         
-        println(stderr, "About to accept client...")
+        println(stderr, "=== main: About to call handle_client() ===")
         flush(stderr)
         
         # Handle client connection
+        println(stderr, "=== main: Calling handle_client() ===")
+        flush(stderr)
         handle_client(state)
+        println(stderr, "=== main: handle_client() returned ===")
+        flush(stderr)
         
         @info "Worker shutting down normally"
         flush(stdout)
