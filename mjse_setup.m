@@ -258,8 +258,6 @@ function apply_patchelf_shadowing(julia_dir)
         system(cmd);
     end
     fprintf('    Patched %d files with new library references\n', patched_count);
-        system(cmd);
-    end
     
     % Step 4: Patch the julia binary executable with RPATH and force-link shadowed libs
     julia_bin = fullfile(julia_dir, 'bin', 'julia');
