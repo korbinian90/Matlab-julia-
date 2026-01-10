@@ -333,47 +333,123 @@ classdef MJSE < handle
         end
         
         function write_shared_memory(obj, data)
-            % Write data to shared memory and set flag
+            % Write data to shared memory utilizing direct type mapping where possible
             
-            % Encode metadata
-            [type_code, byte_data] = obj.encode_data(data);
-             
-            required_size = length(byte_data) + obj.HEADER_SIZE;
+            % Determine if we can use optimized path (Real Numeric)
+            use_optimized = false;
+            type_str = '';
+            elem_size = 0;
+            type_code = uint64(0);
+            
+            if isnumeric(data) && isreal(data)
+                switch class(data)
+                    case 'double'
+                        type_code = obj.TYPE_DOUBLE; type_str = 'double'; elem_size = 8;
+                    case 'single'
+                        type_code = obj.TYPE_SINGLE; type_str = 'single'; elem_size = 4;
+                    case 'uint8'
+                        type_code = obj.TYPE_UINT8;  type_str = 'uint8';  elem_size = 1;
+                    case 'int8'
+                        type_code = obj.TYPE_INT8;   type_str = 'int8';   elem_size = 1;
+                    case 'uint16'
+                        type_code = obj.TYPE_UINT16; type_str = 'uint16'; elem_size = 2;
+                    case 'int16'
+                        type_code = obj.TYPE_INT16;  type_str = 'int16';  elem_size = 2;
+                    case 'uint32'
+                        type_code = obj.TYPE_UINT32; type_str = 'uint32'; elem_size = 4;
+                    case 'int32'
+                        type_code = obj.TYPE_INT32;  type_str = 'int32';  elem_size = 4;
+                    case 'uint64'
+                        type_code = obj.TYPE_UINT64; type_str = 'uint64'; elem_size = 8;
+                    case 'int64'
+                        type_code = obj.TYPE_INT64;  type_str = 'int64';  elem_size = 8;
+                end
+                if ~isempty(type_str)
+                    use_optimized = true;
+                end
+            end
+            
+            byte_len = 0;
+            encoded_bytes = [];
+            
+            if use_optimized
+                % Calculate size without copying data
+                num_elem = numel(data);
+                byte_len = num_elem * elem_size;
+            else
+                % Fallback (Complex, custom)
+                [type_code, encoded_bytes] = obj.encode_data(data);
+                byte_len = length(encoded_bytes);
+            end
+
+            required_size = byte_len + obj.HEADER_SIZE;
             
             % Check resizing logic
-            if length(byte_data) > (obj.current_buffer_size - obj.HEADER_SIZE)
+            if byte_len > (obj.current_buffer_size - obj.HEADER_SIZE)
                 % Grow buffer
                 new_size = max(required_size * 1.5, obj.current_buffer_size * 2);
-                % Align to 1MB
-                new_size = ceil(new_size / (1024*1024)) * 1024*1024;
+                new_size = ceil(new_size / (1024*1024)) * 1024*1024; % Align to 1MB
                 fprintf('MJSE: Growing shared memory to %.2f MB\n', new_size/1024/1024);
                 obj.resize_shared_memory(new_size);
                 
             elseif required_size < (obj.DEFAULT_BUFFER_SIZE - obj.HEADER_SIZE) && ...
                    obj.current_buffer_size > obj.DEFAULT_BUFFER_SIZE
-               % Shrink buffer if it's large but we only need small space
-               % Only shrink if we are significantly over default
+               % Shrink buffer
                fprintf('MJSE: Shrinking shared memory to default (%.2f MB)\n', obj.DEFAULT_BUFFER_SIZE/1024/1024);
                obj.resize_shared_memory(obj.DEFAULT_BUFFER_SIZE);
             end
             
-            % Write metadata
-            obj.shm_mmap.Data.DataType = type_code;
-            obj.shm_mmap.Data.DataSize = uint64(length(byte_data));
+            % Write Header (Standard)
+            % Be careful not to disrupt the Format if we are about to change it
+            % Reset to default format to write header safely?
+            % Actually, we can write header using existing map structure, then change payload
+            
+            obj.shm_mmap.Format = {
+                'uint64', [1], 'StateFlag';
+                'uint64', [1], 'DataType';
+                'uint64', [1], 'NDims';
+                'uint64', [1], 'DataSize';
+                'uint64', [8], 'Dims';
+                'uint8',  [32], 'Reserved';
+                'uint8',  [obj.current_buffer_size - 128], 'Data' % Default view
+            };
+
+            % Use Data(1) to ensure we write to the first block (file is large, so structure might repeat)
+            obj.shm_mmap.Data(1).DataType = type_code;
+            obj.shm_mmap.Data(1).DataSize = uint64(byte_len);
             
             dims = size(data);
-            obj.shm_mmap.Data.NDims = uint64(length(dims));
+            obj.shm_mmap.Data(1).NDims = uint64(length(dims));
             
-            % Write dims (up to 8 supported)
             dims_padded = ones(1, 8, 'uint64');
             dims_padded(1:length(dims)) = uint64(dims);
-            obj.shm_mmap.Data.Dims = dims_padded;
+            obj.shm_mmap.Data(1).Dims = dims_padded;
             
-            % Write data bytes
-            obj.shm_mmap.Data.Data(1:length(byte_data)) = byte_data;
+            % Write Payload
+            if use_optimized
+                % Direct Type Mapping
+                % Re-configure Format to map payload as specific type
+                obj.shm_mmap.Format = {
+                    'uint64', [1], 'StateFlag';
+                    'uint64', [1], 'DataType';
+                    'uint64', [1], 'NDims';
+                    'uint64', [1], 'DataSize';
+                    'uint64', [8], 'Dims';
+                    'uint8',  [32], 'Reserved';
+                    type_str, [numel(data)], 'Payload'
+                };
+                
+                % Use Data(1)
+                obj.shm_mmap.Data(1).Payload = data(:);
+                
+            else
+                % Use uint8 buffer
+                % Data(1).Data works if Format maps huge Data array
+                obj.shm_mmap.Data(1).Data(1:byte_len) = encoded_bytes;
+            end
             
             % Set state to READY
-            obj.shm_mmap.Data.StateFlag = obj.STATE_READY;
+            obj.shm_mmap.Data(1).StateFlag = obj.STATE_READY;
         end
         
         function result = wait_and_read(obj)
@@ -382,37 +458,93 @@ classdef MJSE < handle
             max_wait = 30;  % 30 second timeout
             start_time = tic;
             
+            % Ensure default format for polling
+            obj.shm_mmap.Format = {
+                'uint64', [1], 'StateFlag';
+                'uint64', [1], 'DataType';
+                'uint64', [1], 'NDims';
+                'uint64', [1], 'DataSize';
+                'uint64', [8], 'Dims';
+                'uint8',  [32], 'Reserved';
+                'uint8',  [obj.current_buffer_size - 128], 'Data'
+            };
+            
             while toc(start_time) < max_wait
-                current_state = obj.shm_mmap.Data.StateFlag;
+                % Check flag on first block
+                current_state = obj.shm_mmap.Data(1).StateFlag;
                 
                 if current_state == obj.STATE_DONE
-                    % Read result 
-                    data_size = double(obj.shm_mmap.Data.DataSize);
-                    type_code = obj.shm_mmap.Data.DataType;
-                    n_dims = double(obj.shm_mmap.Data.NDims);
-                    dims = double(obj.shm_mmap.Data.Dims);
+                    % Read Headers
+                    data_size = double(obj.shm_mmap.Data(1).DataSize);
+                    type_code = obj.shm_mmap.Data(1).DataType;
+                    n_dims = double(obj.shm_mmap.Data(1).NDims);
+                    dims = double(obj.shm_mmap.Data(1).Dims);
+                    real_dims = dims(1:n_dims);
+                    % Ensure row vector for reshape
+                    real_dims = reshape(real_dims, 1, []);
                     
                     % Sanity check size
                     if data_size > (obj.current_buffer_size - obj.HEADER_SIZE)
-                         % This implies Julia wrote more than we expected? 
-                         % Or we processed in place.
-                         % If Julia needs to resize output, we haven't implemented that direction yet.
-                         % But for now, let's assume result <= buffer.
-                         % If result > buffer, Julia side check would fail or we need "RESIZE" from Julia.
-                         % For this iteration:
                          warning('MJSE:DataTruncated', 'Data size exceeds buffer');
                          data_size = obj.current_buffer_size - obj.HEADER_SIZE;
                     end
                     
                     if data_size > 0
-                        raw_bytes = obj.shm_mmap.Data.Data(1:data_size);
-                        result = obj.decode_data(raw_bytes, type_code, dims(1:n_dims));
+                        % Optimization: Check if we can read directly
+                        use_optimized = false;
+                        type_str = '';
+                        
+                        switch type_code
+                            case obj.TYPE_DOUBLE; type_str = 'double'; use_optimized = true;
+                            case obj.TYPE_SINGLE; type_str = 'single'; use_optimized = true;
+                            case obj.TYPE_UINT8;  type_str = 'uint8';  use_optimized = true;
+                            case obj.TYPE_INT8;   type_str = 'int8';   use_optimized = true;
+                            case obj.TYPE_UINT16; type_str = 'uint16'; use_optimized = true;
+                            case obj.TYPE_INT16;  type_str = 'int16';  use_optimized = true;
+                            case obj.TYPE_UINT32; type_str = 'uint32'; use_optimized = true;
+                            case obj.TYPE_INT32;  type_str = 'int32';  use_optimized = true;
+                            case obj.TYPE_UINT64; type_str = 'uint64'; use_optimized = true;
+                            case obj.TYPE_INT64;  type_str = 'int64';  use_optimized = true;
+                        end
+                        
+                        if use_optimized
+                            % Calculate number of elements
+                            % We assume data_size matches num_el * sizeof(type)
+                            % Map directly
+                            
+                            % Number of elements based on dims
+                            num_el = prod(real_dims);
+                            
+                             obj.shm_mmap.Format = {
+                                'uint64', [1], 'StateFlag';
+                                'uint64', [1], 'DataType';
+                                'uint64', [1], 'NDims';
+                                'uint64', [1], 'DataSize';
+                                'uint64', [8], 'Dims';
+                                'uint8',  [32], 'Reserved';
+                                type_str, [num_el], 'Payload'
+                            };
+                            
+                            result = obj.shm_mmap.Data(1).Payload;
+                            % Result is now valid type, but might need reshape
+                            if n_dims > 1
+                                result = reshape(result, real_dims);
+                            end
+                            
+                        else
+                            % Fallback (Complex, etc)
+                            % Use Data(1)
+                            raw_bytes = obj.shm_mmap.Data(1).Data(1:data_size);
+                            result = obj.decode_data(raw_bytes, type_code, real_dims);
+                        end
+                        
                     else
                         result = [];
                     end
                     
                     % Reset to IDLE
-                    obj.shm_mmap.Data.StateFlag = obj.STATE_IDLE;
+                    % Need to ensure StateFlag mapping matches (it does)
+                    obj.shm_mmap.Data(1).StateFlag = obj.STATE_IDLE;
                     return;
                 end
                 
