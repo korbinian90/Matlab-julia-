@@ -255,6 +255,14 @@ classdef MJSE < handle
                 fprintf('  %s\n', java_classpath{i});
             end
             
+            % Check MATLAB's Java version
+            fprintf('\nMATLAB Java version:\n');
+            version_output = version('-java');
+            fprintf('  %s\n', version_output);
+            
+            % Give MATLAB a moment to process the JAR
+            pause(0.5);
+            
             % Try to create bridge instance
             try
                 % Try method 1: Direct instantiation

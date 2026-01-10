@@ -33,9 +33,10 @@ function bridge_build()
     mkdir(buildDir);
     
     try
-        % Compile Java source
+        % Compile Java source with explicit Java 11 target
+        % MATLAB R2024b ships with Java 11, so we must compile for that version
         % The -d option creates package directories (mjse/)
-        compileCmd = sprintf('javac -d "%s" "%s"', buildDir, javaSource);
+        compileCmd = sprintf('javac -source 11 -target 11 -d "%s" "%s"', buildDir, javaSource);
         [status, output] = system(compileCmd);
         
         if status ~= 0
