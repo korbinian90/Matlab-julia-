@@ -27,12 +27,12 @@ mutable struct WorkerState
     port::Int
     shm_path::String
     matlab_pid::Int
-    shm_io::Union{IOStream, Nothing}
-    shm_array::Union{Vector{UInt8}, Nothing}
-    server::Union{Sockets.TCPServer, Nothing}
-    client::Union{TCPSocket, Nothing}
+    shm_io::Union{IOStream,Nothing}
+    shm_array::Union{Vector{UInt8},Nothing}
+    server::Union{Sockets.TCPServer,Nothing}
+    client::Union{TCPSocket,Nothing}
     running::Bool
-    heartbeat_task::Union{Task, Nothing}
+    heartbeat_task::Union{Task,Nothing}
 end
 
 function WorkerState(port::Int, shm_path::String, matlab_pid::Int)
@@ -43,35 +43,35 @@ function parse_args()
     s = ArgParseSettings()
     @add_arg_table! s begin
         "--port"
-            help = "TCP port number"
-            arg_type = Int
-            required = true
+        help = "TCP port number"
+        arg_type = Int
+        required = true
         "--shm"
-            help = "Shared memory file path"
-            required = true
+        help = "Shared memory file path"
+        required = true
         "--pid"
-            help = "MATLAB process ID"
-            arg_type = Int
-            required = true
+        help = "MATLAB process ID"
+        arg_type = Int
+        required = true
     end
     return ArgParse.parse_args(s)
 end
 
 function init_shared_memory(state::WorkerState)
     try
-        @info "Opening shared memory" path=state.shm_path
-        
+        @info "Opening shared memory" path = state.shm_path
+
         # Open shared memory file
         state.shm_io = open(state.shm_path, "r+")
-        
+
         # Memory map entire file
         total_size = HEADER_SIZE + BUFFER_SIZE
         state.shm_array = Mmap.mmap(state.shm_io, Vector{UInt8}, total_size)
-        
-        @info "Shared memory initialized" size_mb=total_size/1024/1024
+
+        @info "Shared memory initialized" size_mb = total_size / 1024 / 1024
         return true
     catch e
-        @error "Failed to initialize shared memory" exception=e
+        @error "Failed to initialize shared memory" exception = e
         return false
     end
 end
@@ -104,12 +104,12 @@ function start_heartbeat(state::WorkerState)
             try
                 # Check if MATLAB process is still alive
                 if !isprocess_alive(state.matlab_pid)
-                    @warn "MATLAB process died, shutting down" matlab_pid=state.matlab_pid
+                    @warn "MATLAB process died, shutting down" matlab_pid = state.matlab_pid
                     state.running = false
                     break
                 end
             catch e
-                @error "Heartbeat error" exception=e
+                @error "Heartbeat error" exception = e
             end
             sleep(1.0)
         end
@@ -135,12 +135,12 @@ end
 
 function start_tcp_server(state::WorkerState)
     try
-        @info "Starting TCP server" port=state.port
+        @info "Starting TCP server" port = state.port
         state.server = listen(ip"127.0.0.1", state.port)  # Explicitly bind to localhost
-        @info "TCP server listening" port=state.port
+        @info "TCP server listening" port = state.port
         return true
     catch e
-        @error "Failed to start TCP server" exception=e
+        @error "Failed to start TCP server" exception = e
         return false
     end
 end
@@ -153,45 +153,50 @@ function handle_client(state::WorkerState)
         @info "Waiting for client connection..."
         flush(stdout)
         flush(stderr)
-        
+
         println(stderr, "=== Calling accept() now ===")
         flush(stderr)
         state.client = accept(state.server)
         println(stderr, "=== accept() returned successfully ===")
         flush(stderr)
-        
+
         @info "Client connected"
         flush(stdout)
         flush(stderr)
-        
-        while state.running
-            # Check for incoming commands
-            if bytesavailable(state.client) > 0
-                command = String(read(state.client, available=true))
-                @info "Received command" command=command
-                
+
+        while state.running && isopen(state.client)
+            if eof(state.client)
+                @info "Client disconnected"
+                break
+            end
+
+            # This blocks until at least one byte is available
+            data = readavailable(state.client)
+            if !isempty(data)
+                command = String(data)
+                @info "Received command" command = command
+
                 if startswith(command, "HANDSHAKE")
                     # Respond to handshake
                     write(state.client, "ACK")
+                    flush(state.client)
                     @info "Handshake complete"
-                    
+
                 elseif startswith(command, "PROCESS")
                     # Process data from shared memory
                     process_data(state)
-                    
+
                 elseif startswith(command, "SHUTDOWN")
                     @info "Shutdown requested"
                     state.running = false
                     break
                 end
             end
-            
-            sleep(0.01)  # Prevent busy-waiting
         end
-        
+
     catch e
         if state.running  # Only log if not intentional shutdown
-            @error "Client handler error" exception=e
+            @error "Client handler error" exception = e
         end
     finally
         try
@@ -207,7 +212,7 @@ function process_data(state::WorkerState)
         # Wait for READY flag
         max_wait = 30  # 30 second timeout
         start_time = time()
-        
+
         while time() - start_time < max_wait
             flag = get_state_flag(state)
             if flag == STATE_READY
@@ -215,31 +220,31 @@ function process_data(state::WorkerState)
             end
             sleep(0.01)
         end
-        
+
         if get_state_flag(state) != STATE_READY
             @error "Timeout waiting for READY flag"
             return
         end
-        
+
         # Set to PROCESSING
         set_state_flag(state, STATE_PROCESSING)
-        
+
         # Get data view
         data_view = get_data(state)
-        
+
         # TODO: Actual processing here
         # For now, just echo back (data already in shared memory)
-        @info "Processing data" size_bytes=length(data_view)
-        
+        @info "Processing data" size_bytes = length(data_view)
+
         # Simulate some processing
         sleep(0.01)
-        
+
         # Set to DONE
         set_state_flag(state, STATE_DONE)
         @info "Processing complete"
-        
+
     catch e
-        @error "Data processing error" exception=e
+        @error "Data processing error" exception = e
         set_state_flag(state, STATE_IDLE)
     end
 end
@@ -247,35 +252,35 @@ end
 function cleanup(state::WorkerState)
     """Clean up resources"""
     state.running = false
-    
+
     try
         if state.heartbeat_task !== nothing
             wait(state.heartbeat_task)
         end
     catch
     end
-    
+
     try
         if state.client !== nothing
             close(state.client)
         end
     catch
     end
-    
+
     try
         if state.server !== nothing
             close(state.server)
         end
     catch
     end
-    
+
     try
         if state.shm_io !== nothing
             close(state.shm_io)
         end
     catch
     end
-    
+
     @info "Cleanup complete"
 end
 
@@ -285,84 +290,84 @@ function main()
     flush(stderr)
     println(stdout, "=== JULIA WORKER STARTING ===")
     flush(stdout)
-    
+
     # Flush output immediately for debugging
     Base.stdout |> flush
     Base.stderr |> flush
-    
+
     println(stderr, "About to parse args...")
     flush(stderr)
-    
+
     args = parse_args()
-    
+
     println(stderr, "Args parsed successfully")
     flush(stderr)
-    
-    @info "MJSEWorker starting" port=args["port"] shm=args["shm"] matlab_pid=args["pid"]
+
+    @info "MJSEWorker starting" port = args["port"] shm = args["shm"] matlab_pid = args["pid"]
     flush(stdout)
     flush(stderr)
-    
+
     state = WorkerState(args["port"], args["shm"], args["pid"])
     state.running = true
-    
+
     println(stderr, "WorkerState created")
     flush(stderr)
-    
+
     try
         # Initialize shared memory
         println(stderr, "Initializing shared memory...")
         flush(stderr)
-        
+
         if !init_shared_memory(state)
             @error "Failed to initialize shared memory"
             flush(stdout)
             flush(stderr)
             return 1
         end
-        
+
         println(stderr, "Shared memory initialized")
         flush(stderr)
-        
+
         # Start TCP server
         println(stderr, "Starting TCP server...")
         flush(stderr)
-        
+
         if !start_tcp_server(state)
             @error "Failed to start TCP server"
             flush(stdout)
             flush(stderr)
             return 1
         end
-        
+
         println(stderr, "TCP server started on port $(state.port)")
         flush(stderr)
-        
+
         # Start heartbeat monitoring
         start_heartbeat(state)
-        
+
         @info "Server ready, waiting for client..."
         flush(stdout)
         flush(stderr)
-        
+
         println(stderr, "=== main: About to call handle_client() ===")
         flush(stderr)
-        
+
         # Handle client connection
         println(stderr, "=== main: Calling handle_client() ===")
         flush(stderr)
         handle_client(state)
         println(stderr, "=== main: handle_client() returned ===")
         flush(stderr)
-        
+
         @info "Worker shutting down normally"
         flush(stdout)
         flush(stderr)
         return 0
-        
+
     catch e
         println(stderr, "=== JULIA WORKER ERROR ===")
         flush(stderr)
-        @error "Worker error" exception=e
+        @error "Worker error" exception = e
         println(stderr, "Exception details: $e")
         flush(stderr)
         for (exc, bt) in Base.catch_stack()
