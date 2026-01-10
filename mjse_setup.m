@@ -313,7 +313,7 @@ function apply_patchelf_shadowing(julia_dir)
     
     % Step 5: Verification - test Julia can load
     fprintf('    Verifying Julia installation...\n');
-    [status, output] = system(sprintf('"%s" -e "println(\"Julia OK\")" 2>&1', julia_bin));
+    [status, output] = system(sprintf('"%s" -e ''println("Julia OK")'' 2>&1', julia_bin));
     if status == 0 && contains(output, 'Julia OK')
         fprintf('      ✓ Julia verification PASSED\n');
     else
