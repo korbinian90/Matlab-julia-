@@ -152,8 +152,10 @@ end
 
 function apply_patchelf_shadowing(julia_dir)
     % Apply patchelf library shadowing to prevent MATLAB conflicts (Linux only)
+    % Uses "Shadow & Scrub" approach: recursively patch ALL .so files in lib/
     
-    julia_lib = fullfile(julia_dir, 'lib', 'julia');
+    julia_lib = fullfile(julia_dir, 'lib');  % Process entire lib directory
+    julia_lib_julia = fullfile(julia_lib, 'julia');
     
     % Check if patchelf is available
     [status, ~] = system('which patchelf');
@@ -163,12 +165,13 @@ function apply_patchelf_shadowing(julia_dir)
         return;
     end
     
-    % Libraries to shadow
+    % Libraries to shadow (the "Trio")
     libs_to_shadow = {'libstdc++.so.6', 'libgcc_s.so.1', 'libgfortran.so.5'};
     
+    % Step 1: Physically rename the trio in lib/julia (where they live)
     for i = 1:length(libs_to_shadow)
         lib_name = libs_to_shadow{i};
-        lib_path = fullfile(julia_lib, lib_name);
+        lib_path = fullfile(julia_lib_julia, lib_name);
         
         if ~exist(lib_path, 'file')
             continue;
@@ -187,7 +190,7 @@ function apply_patchelf_shadowing(julia_dir)
             [~, base_name] = fileparts(lib_name);
             shadowed_name = [base_name '_mjse'];
         end
-        shadowed_path = fullfile(julia_lib, shadowed_name);
+        shadowed_path = fullfile(julia_lib_julia, shadowed_name);
         
         % Physically rename the library (no symlinks)
         if exist(lib_path, 'file') && ~exist(shadowed_path, 'file')
@@ -196,19 +199,15 @@ function apply_patchelf_shadowing(julia_dir)
         end
     end
     
-    % Patch ALL Julia library files (.so) to use renamed libraries
-    % Get all .so files in lib/julia directory
-    so_files = dir(fullfile(julia_lib, '*.so*'));
+    % Step 2: Recursively find ALL .so files in entire lib/ tree
+    fprintf('    Scanning for .so files in %s...\n', julia_lib);
+    all_so_files = find_so_files_recursive(julia_lib);
     
-    fprintf('    Found %d library files to patch\n', length(so_files));
+    fprintf('    Found %d library files to patch\n', length(all_so_files));
     
-    for j = 1:length(so_files)
-        target_lib = fullfile(julia_lib, so_files(j).name);
-        
-        % Skip if it's a directory or symlink
-        if so_files(j).isdir
-            continue;
-        end
+    % Step 3: Patch ALL .so files to use renamed libraries
+    for j = 1:length(all_so_files)
+        target_lib = all_so_files{j};
         
         % Patch dependencies for each .so file
         for i = 1:length(libs_to_shadow)
@@ -231,12 +230,12 @@ function apply_patchelf_shadowing(julia_dir)
         end
         
         % Set RPATH to prioritize Julia's lib directories
-        cmd = sprintf('patchelf --set-rpath ''$ORIGIN:$ORIGIN/../lib'' "%s" 2>/dev/null', ...
+        cmd = sprintf('patchelf --set-rpath ''$ORIGIN:$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', ...
             target_lib);
         system(cmd);
     end
     
-    % Patch the julia binary executable
+    % Step 4: Patch the julia binary executable
     julia_bin = fullfile(julia_dir, 'bin', 'julia');
     if exist(julia_bin, 'file')
         fprintf('    Patching julia binary RPATH...\n');
@@ -245,7 +244,50 @@ function apply_patchelf_shadowing(julia_dir)
         system(cmd);
     end
     
+    % Step 5: Verification - test Julia can load
+    fprintf('    Verifying Julia installation...\n');
+    [status, output] = system(sprintf('"%s" -e "println(\"Julia OK\")" 2>&1', julia_bin));
+    if status == 0 && contains(output, 'Julia OK')
+        fprintf('  ✓ Julia verification passed\n');
+    else
+        warning('MJSE:JuliaVerificationFailed', 'Julia verification failed:\n%s', output);
+    end
+    
     fprintf('  Library shadowing complete - Julia isolated from MATLAB libs\n');
+end
+
+function so_files = find_so_files_recursive(root_dir)
+    % Recursively find all .so* files in directory tree
+    so_files = {};
+    
+    % Get items in current directory
+    items = dir(root_dir);
+    
+    for i = 1:length(items)
+        item = items(i);
+        
+        % Skip . and ..
+        if strcmp(item.name, '.') || strcmp(item.name, '..')
+            continue;
+        end
+        
+        full_path = fullfile(root_dir, item.name);
+        
+        if item.isdir
+            % Recursively search subdirectories
+            sub_files = find_so_files_recursive(full_path);
+            so_files = [so_files, sub_files];
+        else
+            % Check if file is a .so file (includes .so, .so.1, .so.1.2, etc)
+            if contains(item.name, '.so')
+                % Skip symlinks (check if readlink works)
+                [status, ~] = system(sprintf('test -L "%s"', full_path));
+                if status ~= 0  % Not a symlink
+                    so_files{end+1} = full_path;
+                end
+            end
+        end
+    end
 end
 
 function prewarm_julia_cache(julia_dir)

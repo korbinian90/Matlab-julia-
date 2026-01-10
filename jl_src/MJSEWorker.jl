@@ -268,9 +268,15 @@ function cleanup(state::WorkerState)
 end
 
 function main()
+    # Flush output immediately for debugging
+    Base.stdout |> flush
+    Base.stderr |> flush
+    
     args = parse_args()
     
     @info "MJSEWorker starting" port=args["port"] shm=args["shm"] matlab_pid=args["pid"]
+    flush(stdout)
+    flush(stderr)
     
     state = WorkerState(args["port"], args["shm"], args["pid"])
     state.running = true
@@ -279,26 +285,38 @@ function main()
         # Initialize shared memory
         if !init_shared_memory(state)
             @error "Failed to initialize shared memory"
+            flush(stdout)
+            flush(stderr)
             return 1
         end
         
         # Start TCP server
         if !start_tcp_server(state)
             @error "Failed to start TCP server"
+            flush(stdout)
+            flush(stderr)
             return 1
         end
         
         # Start heartbeat monitoring
         start_heartbeat(state)
         
+        @info "Server ready, waiting for client..."
+        flush(stdout)
+        flush(stderr)
+        
         # Handle client connection
         handle_client(state)
         
         @info "Worker shutting down normally"
+        flush(stdout)
+        flush(stderr)
         return 0
         
     catch e
         @error "Worker error" exception=e
+        flush(stdout)
+        flush(stderr)
         return 1
     finally
         cleanup(state)
