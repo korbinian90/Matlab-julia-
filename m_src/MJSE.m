@@ -321,17 +321,17 @@ classdef MJSE < handle
             write(obj.tcp_client, uint8('HANDSHAKE'));
             fprintf('DEBUG: HANDSHAKE sent, waiting for response...\n');
             
-            % Wait for response
-            pause(0.2);
-            fprintf('DEBUG: BytesAvailable = %d\n', obj.tcp_client.BytesAvailable);
-            if obj.tcp_client.BytesAvailable > 0
-                response = read(obj.tcp_client, obj.tcp_client.BytesAvailable, 'char');
+            % Wait for response (ACK is 3 bytes)
+            % Use blocking read with timeout (handled by tcpclient property)
+            try
+                response = char(read(obj.tcp_client, 3, 'uint8'));
                 fprintf('DEBUG: Received response: "%s"\n', response);
-                if ~strcmp(strtrim(response), 'ACK')
+                
+                if ~strcmp(response, 'ACK')
                     error('MJSE:HandshakeFailed', 'Invalid handshake response: %s', response);
                 end
-            else
-                error('MJSE:HandshakeFailed', 'No handshake response');
+            catch e
+                error('MJSE:HandshakeFailed', 'No handshake response or timeout: %s', e.message);
             end
             
             fprintf('Handshake complete\n');
