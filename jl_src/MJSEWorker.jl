@@ -268,11 +268,23 @@ function cleanup(state::WorkerState)
 end
 
 function main()
+    # Force unbuffered output from the start
+    println(stderr, "=== JULIA WORKER STARTING ===")
+    flush(stderr)
+    println(stdout, "=== JULIA WORKER STARTING ===")
+    flush(stdout)
+    
     # Flush output immediately for debugging
     Base.stdout |> flush
     Base.stderr |> flush
     
+    println(stderr, "About to parse args...")
+    flush(stderr)
+    
     args = parse_args()
+    
+    println(stderr, "Args parsed successfully")
+    flush(stderr)
     
     @info "MJSEWorker starting" port=args["port"] shm=args["shm"] matlab_pid=args["pid"]
     flush(stdout)
@@ -281,8 +293,14 @@ function main()
     state = WorkerState(args["port"], args["shm"], args["pid"])
     state.running = true
     
+    println(stderr, "WorkerState created")
+    flush(stderr)
+    
     try
         # Initialize shared memory
+        println(stderr, "Initializing shared memory...")
+        flush(stderr)
+        
         if !init_shared_memory(state)
             @error "Failed to initialize shared memory"
             flush(stdout)
@@ -290,7 +308,13 @@ function main()
             return 1
         end
         
+        println(stderr, "Shared memory initialized")
+        flush(stderr)
+        
         # Start TCP server
+        println(stderr, "Starting TCP server...")
+        flush(stderr)
+        
         if !start_tcp_server(state)
             @error "Failed to start TCP server"
             flush(stdout)
@@ -298,11 +322,17 @@ function main()
             return 1
         end
         
+        println(stderr, "TCP server started on port $(state.port)")
+        flush(stderr)
+        
         # Start heartbeat monitoring
         start_heartbeat(state)
         
         @info "Server ready, waiting for client..."
         flush(stdout)
+        flush(stderr)
+        
+        println(stderr, "About to accept client...")
         flush(stderr)
         
         # Handle client connection
@@ -314,16 +344,31 @@ function main()
         return 0
         
     catch e
+        println(stderr, "=== JULIA WORKER ERROR ===")
+        flush(stderr)
         @error "Worker error" exception=e
+        println(stderr, "Exception details: $e")
+        flush(stderr)
+        for (exc, bt) in Base.catch_stack()
+            showerror(stderr, exc, bt)
+            println(stderr)
+        end
         flush(stdout)
         flush(stderr)
         return 1
     finally
+        println(stderr, "=== JULIA WORKER CLEANUP ===")
+        flush(stderr)
         cleanup(state)
     end
 end
 
 # Run if executed as script
 if abspath(PROGRAM_FILE) == @__FILE__
-    exit(main())
+    println(stderr, "=== JULIA WORKER ENTRY POINT ===")
+    flush(stderr)
+    exitcode = main()
+    println(stderr, "=== JULIA WORKER EXITING WITH CODE $exitcode ===")
+    flush(stderr)
+    exit(exitcode)
 end

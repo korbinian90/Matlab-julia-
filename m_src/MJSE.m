@@ -184,6 +184,12 @@ classdef MJSE < handle
             % Log file for debugging
             log_file = fullfile(tempdir, sprintf('mjse_worker_%d.log', obj.tcp_port));
             
+            % Debug: Show paths being used
+            fprintf('DEBUG: Julia exe: %s\n', julia_exe);
+            fprintf('DEBUG: Worker script: %s\n', worker_script);
+            fprintf('DEBUG: jl_src dir: %s\n', fullfile(repo_root, 'jl_src'));
+            fprintf('DEBUG: Port: %d, SHM: %s, PID: %d\n', obj.tcp_port, obj.shm_path, feature('getpid'));
+            
             % Build command with environment scrubbing on Linux (prevents MATLAB interference)
             if isunix && ~ismac
                 % Use 'env -u' to clear LD_LIBRARY_PATH and LD_PRELOAD
@@ -213,16 +219,25 @@ classdef MJSE < handle
             end
             
             fprintf('Launching Julia worker...\n');
+            fprintf('DEBUG: Command: %s\n', cmd);
             fprintf('Julia worker log: %s\n', log_file);
             if ispc || ismac
                 % On Windows and macOS, background launch returns immediately
                 % (Windows: start command, macOS: nohup with &)
-                [~, ~] = system(cmd);
+                [status, output] = system(cmd);
+                fprintf('DEBUG: system() returned status=%d\n', status);
+                if ~isempty(output)
+                    fprintf('DEBUG: system() output: %s\n', output);
+                end
                 % Give Julia more time to start (macOS/Windows have slower startup)
                 pause(5);
             else
                 % Linux: env -u with & also returns immediately, but faster startup
-                [~, ~] = system(cmd);
+                [status, output] = system(cmd);
+                fprintf('DEBUG: system() returned status=%d\n', status);
+                if ~isempty(output)
+                    fprintf('DEBUG: system() output: %s\n', output);
+                end
                 pause(2);
             end
             
@@ -230,7 +245,26 @@ classdef MJSE < handle
             if isfile(log_file)
                 fprintf('--- Julia Worker Log ---\n');
                 log_content = fileread(log_file);
-                fprintf('%s\n', log_content);
+                if isempty(strtrim(log_content))
+                    fprintf('(Log file is empty)\n');
+                else
+                    fprintf('%s\n', log_content);
+                end
+                fprintf('--- End Julia Worker Log ---\n');
+            else
+                fprintf('DEBUG: Log file does not exist yet: %s\n', log_file);
+            end
+            
+            % Try to read log again after a short delay
+            pause(1);
+            if isfile(log_file)
+                fprintf('--- Julia Worker Log (after delay) ---\n');
+                log_content = fileread(log_file);
+                if isempty(strtrim(log_content))
+                    fprintf('(Log file is still empty)\n');
+                else
+                    fprintf('%s\n', log_content);
+                end
                 fprintf('--- End Julia Worker Log ---\n');
             end
         end
@@ -254,14 +288,18 @@ classdef MJSE < handle
         
         function perform_handshake(obj)
             % Perform handshake with Julia
+            fprintf('DEBUG: Sending HANDSHAKE...\n');
             write(obj.tcp_client, uint8('HANDSHAKE'));
+            fprintf('DEBUG: HANDSHAKE sent, waiting for response...\n');
             
             % Wait for response
             pause(0.2);
+            fprintf('DEBUG: BytesAvailable = %d\n', obj.tcp_client.BytesAvailable);
             if obj.tcp_client.BytesAvailable > 0
                 response = read(obj.tcp_client, obj.tcp_client.BytesAvailable, 'char');
+                fprintf('DEBUG: Received response: "%s"\n', response);
                 if ~strcmp(strtrim(response), 'ACK')
-                    error('MJSE:HandshakeFailed', 'Invalid handshake response');
+                    error('MJSE:HandshakeFailed', 'Invalid handshake response: %s', response);
                 end
             else
                 error('MJSE:HandshakeFailed', 'No handshake response');
