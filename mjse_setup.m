@@ -193,7 +193,13 @@ function apply_patchelf_shadowing(julia_dir)
         if ~exist(shadowed_path, 'file')
             fprintf('    Shadowing %s -> %s\n', lib_name, shadowed_name);
             copyfile(lib_path, shadowed_path);
-            delete(lib_path);  % Remove original
+            % Keep original as symlink to shadowed version
+            % This way Julia's internal references still work
+            delete(lib_path);
+            if isunix
+                % Create symlink: original -> shadowed
+                system(sprintf('ln -s "%s" "%s"', shadowed_name, lib_path));
+            end
         end
     end
     
