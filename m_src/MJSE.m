@@ -244,6 +244,15 @@ classdef MJSE < handle
             if ~any(strcmp(java_classpath, jar_path))
                 javaaddpath(jar_path);
                 fprintf('Added JAR to Java classpath\n');
+                
+                % CRITICAL: clear java flushes MATLAB's Java class cache
+                % This prevents classloader isolation from blacklisting classes
+                % that may have failed to load in previous attempts
+                clear java;
+                fprintf('Cleared Java class cache to reset classloader\n');
+                
+                % Brief pause to allow JVM to reinitialize
+                pause(0.1);
             else
                 fprintf('JAR already in Java classpath\n');
             end
@@ -259,9 +268,6 @@ classdef MJSE < handle
             fprintf('\nMATLAB Java version:\n');
             version_output = version('-java');
             fprintf('  %s\n', version_output);
-            
-            % Give MATLAB a moment to process the JAR
-            pause(0.5);
             
             % Try to create bridge instance
             try
