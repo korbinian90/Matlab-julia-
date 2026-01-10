@@ -1,4 +1,4 @@
-name: Test MJSE
+name: Test MJSE (Universal Hybrid)
 
 on:
   push:
@@ -26,25 +26,7 @@ jobs:
       with:
         release: R2024b
     
-    - name: Set up Java (for Java bridge compilation)
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '11'
-    
-    - name: Run MATLAB tests (auto-setup handles Julia download and bridge build)
-      if: runner.os == 'Linux'
-      uses: matlab-actions/run-command@v2
-      env:
-        MJSE_SHADOW_LIBS: '1'
-      with:
-        command: |
-          addpath('m_src');
-          addpath('tests');
-          test_roundtrip();
-    
-    - name: Run MATLAB tests (auto-setup handles Julia download and bridge build)
-      if: runner.os != 'Linux'
+    - name: Run MATLAB tests (auto-setup handles Julia download)
       uses: matlab-actions/run-command@v2
       with:
         command: |
@@ -58,6 +40,6 @@ jobs:
       with:
         name: mjse-logs-${{ matrix.os }}
         path: |
-          /tmp/mjse_worker.log
-          ${{ runner.temp }}/mjse_worker.log
+          /tmp/mjse_*.log
+          ${{ runner.temp }}/mjse_*.log
         if-no-files-found: ignore

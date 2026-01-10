@@ -1,12 +1,18 @@
 # MJSE High-Level Version Manifest
-# Captures minimum required versions for the MATLAB-Julia Satellite Engine
+# Universal Hybrid Architecture (TCP + Shared Memory)
 
 [versions]
 julia = "1.12.0"
-matlab = "R2024b"
-bridge_jar = "MJSEBridge.jar"
+matlab_min = "R2019b"
+matlab_tested = "R2024b"
+
+[architecture]
+control_plane = "TCP localhost"
+data_plane = "Shared Memory (memmapfile + Mmap)"
 
 [notes]
-# Julia: 1.12.x series required for compatibility
-# MATLAB: R2024b or later for Java 11+ support
-# Bridge: Compiled Java bridge for UNIX socket communication
+# Julia: 1.12.x series required
+# MATLAB: R2019b minimum, R2024b tested (no Java Bridge - pure MATLAB/Julia)
+# TCP: Native tcpclient (MATLAB) + Sockets.listen (Julia)
+# StateFlag: 8-byte header (0=Idle, 1=Ready, 2=Processing, 3=Done)
+# Buffer: 256 MB shared memory data buffer

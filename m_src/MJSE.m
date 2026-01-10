@@ -1,65 +1,63 @@
 classdef MJSE < handle
-    %MJSE MATLAB-Julia Satellite Engine manager
+    %MJSE MATLAB-Julia Satellite Engine (Universal Hybrid Architecture)
     %
-    % Manages double-buffered shared memory, Java bridge, and Julia worker daemon.
+    % Uses TCP localhost + shared memory for R2019b-R2026+ compatibility.
+    % No Java Bridge required - pure MATLAB tcpclient + Julia Sockets.
     %
     % Usage:
     %   engine = MJSE();
     %   engine.start();
-    %   % Use engine for computations
+    %   data = rand(100, 100, 100);  % 100MB matrix
+    %   result = engine.call('process', data);
     %   engine.shutdown();
-    %
-    % TODO: Add rich payload metadata (dims/eltype/endian/checksum)
-    % TODO: Add timeout handling and error recovery
     
     properties (Access = private)
         shm_path        % Path to shared memory file
-        shm_mmap        % memmapfile object for zero-copy access
-        socket_path     % Path to UNIX domain socket
-        bridge          % Java bridge object
+        shm_mmap        % memmapfile object
+        tcp_port        % Dynamic TCP port
+        tcp_client      % MATLAB tcpclient object
         julia_process   % Julia process handle
-        header_size     % Size of shared memory header (64 bytes)
-        page_size       % Size of each buffer page (128 MB)
         is_initialized  % Initialization flag
     end
     
     properties (Constant)
-        MAGIC_NUMBER = uint32(hex2dec('4D4A5345'))  % "MJSE"
-        VERSION = uint32(1)
-        HEADER_SIZE = 64
-        PAGE_SIZE = 128 * 1024 * 1024  % 128 MB - TODO: Make configurable
+        STATE_IDLE = uint64(0)
+        STATE_READY = uint64(1)
+        STATE_PROCESSING = uint64(2)
+        STATE_DONE = uint64(3)
+        HEADER_SIZE = 8  % 8-byte StateFlag
+        BUFFER_SIZE = 256 * 1024 * 1024  % 256 MB data buffer
     end
     
     methods
         function obj = MJSE()
-            %MJSE Constructor
-            obj.header_size = MJSE.HEADER_SIZE;
-            obj.page_size = MJSE.PAGE_SIZE;
             obj.is_initialized = false;
             obj.shm_mmap = [];
-            obj.bridge = [];
+            obj.tcp_client = [];
             obj.julia_process = [];
         end
         
         function start(obj)
-            %START Initialize the MJSE engine
-            
             if obj.is_initialized
-                warning('MJSE:AlreadyInitialized', 'MJSE already initialized');
+                warning('MJSE:AlreadyInitialized', 'Already initialized');
                 return;
             end
             
             try
-                % Step 1: Set up shared memory
+                % Step 1: Find available port
+                obj.find_available_port();
+                fprintf('Using TCP port: %d\n', obj.tcp_port);
+                
+                % Step 2: Set up shared memory
                 obj.setup_shared_memory();
                 
-                % Step 2: Load Java bridge
-                obj.load_java_bridge();
+                % Step 3: Launch Julia worker
+                obj.launch_julia_worker();
                 
-                % Step 3: Launch Julia daemon
-                obj.launch_julia_daemon();
+                % Step 4: Connect TCP client
+                obj.connect_tcp();
                 
-                % Step 4: Perform handshake
+                % Step 5: Perform handshake
                 obj.perform_handshake();
                 
                 obj.is_initialized = true;
@@ -72,10 +70,18 @@ classdef MJSE < handle
         end
         
         function shutdown(obj)
-            %SHUTDOWN Clean up and terminate the MJSE engine
-            
             if ~obj.is_initialized
                 return;
+            end
+            
+            try
+                % Send shutdown command
+                if ~isempty(obj.tcp_client)
+                    write(obj.tcp_client, uint8('SHUTDOWN'));
+                    pause(0.1);
+                end
+            catch
+                % Ignore errors during shutdown
             end
             
             obj.cleanup();
@@ -83,435 +89,233 @@ classdef MJSE < handle
             fprintf('MJSE shutdown complete\n');
         end
         
-        function latency = test_roundtrip(obj, data)
-            %TEST_ROUNDTRIP Test roundtrip communication with timing
-            %
-            % Inputs:
-            %   data - Data to send (will be converted to bytes)
-            %
-            % Outputs:
-            %   latency - Roundtrip time in seconds
+        function result = call(obj, ~, data)
+            % CALL Execute Julia function with data transfer via shared memory
             
             if ~obj.is_initialized
-                error('MJSE:NotInitialized', 'MJSE not initialized. Call start() first.');
+                error('MJSE:NotInitialized', 'Not initialized. Call start() first.');
             end
             
-            % Convert data to bytes
-            if isnumeric(data)
-                bytes = typecast(data(:), 'uint8');
-            else
-                error('MJSE:InvalidData', 'Data must be numeric');
-            end
+            % Write data to shared memory
+            obj.write_shared_memory(data);
             
-            payload_size = int64(length(bytes));
+            % Send trigger via TCP
+            write(obj.tcp_client, uint8('PROCESS'));
             
-            % Start timer
-            tic;
-            
-            % Send size (8 bytes)
-            size_bytes = typecast(payload_size, 'uint8');
-            sent = obj.bridge.send(size_bytes);
-            if sent ~= 8
-                error('MJSE:SendFailed', 'Failed to send payload size');
-            end
-            
-            % Send data
-            sent = obj.bridge.send(bytes);
-            if sent ~= length(bytes)
-                error('MJSE:SendFailed', 'Failed to send complete payload');
-            end
-            
-            % Receive size back
-            recv_size_bytes = obj.bridge.receive(8);
-            if isempty(recv_size_bytes) || length(recv_size_bytes) ~= 8
-                error('MJSE:ReceiveFailed', 'Failed to receive payload size');
-            end
-            
-            recv_size = typecast(uint8(recv_size_bytes), 'int64');
-            
-            % Receive data back
-            recv_bytes = obj.bridge.receive(double(recv_size));
-            if isempty(recv_bytes) || length(recv_bytes) ~= recv_size
-                error('MJSE:ReceiveFailed', 'Failed to receive complete payload');
-            end
-            
-            % End timer
-            latency = toc;
-            
-            % Verify data matches
-            if ~isequal(bytes, uint8(recv_bytes)')
-                warning('MJSE:DataMismatch', 'Received data does not match sent data');
-            end
+            % Wait for completion
+            result = obj.wait_and_read();
         end
         
-        function delete(obj)
-            %DELETE Destructor
-            obj.shutdown();
+        function latency = test_roundtrip(obj, data)
+            % TEST_ROUNDTRIP Measure roundtrip latency
+            
+            tic;
+            result = obj.call('echo', data);
+            latency = toc;
+            
+            % Verify data integrity
+            if isnumeric(data) && isnumeric(result)
+                error_norm = norm(double(data(:)) - double(result(:)));
+                if error_norm > 1e-10
+                    warning('MJSE:DataMismatch', 'Roundtrip error: %.2e', error_norm);
+                end
+            end
         end
     end
     
     methods (Access = private)
+        function find_available_port(obj)
+            % Use Java to find an available port
+            try
+                server_socket = java.net.ServerSocket(0);
+                obj.tcp_port = server_socket.getLocalPort();
+                server_socket.close();
+            catch
+                % Fallback to random high port
+                obj.tcp_port = randi([49152, 65535]);
+            end
+        end
+        
         function setup_shared_memory(obj)
-            %SETUP_SHARED_MEMORY Create and initialize double-buffered shared memory
-            %
-            % Uses memmapfile for zero-copy access from MATLAB side
-            % Julia will use Mmap.mmap to access the same file
+            % Create shared memory file
+            obj.shm_path = fullfile(tempdir, sprintf('mjse_shm_%s.dat', ...
+                char(matlab.lang.internal.uuid())));
             
-            % Create temporary shared memory file
-            if ispc
-                obj.shm_path = fullfile(tempdir, ['mjse_shm_' char(java.util.UUID.randomUUID()) '.dat']);
-            else
-                obj.shm_path = fullfile('/tmp', ['mjse_shm_' char(java.util.UUID.randomUUID()) '.dat']);
-            end
+            total_size = obj.HEADER_SIZE + obj.BUFFER_SIZE;
             
-            % Create socket path
-            if ispc
-                % TODO: Named pipe path for Windows
-                obj.socket_path = ['\\.\pipe\mjse_' char(java.util.UUID.randomUUID())];
-            else
-                obj.socket_path = fullfile('/tmp', ['mjse_sock_' char(java.util.UUID.randomUUID()) '.sock']);
-            end
-            
-            % Calculate total size: header + 2 pages
-            total_size = obj.header_size + 2 * obj.page_size;
-            
-            % Create and initialize shared memory file
+            % Create file
             fid = fopen(obj.shm_path, 'w');
-            if fid == -1
-                error('MJSE:ShmCreate', 'Failed to create shared memory file: %s', obj.shm_path);
-            end
-            
-            % Write header
-            header = zeros(1, obj.header_size, 'uint8');
-            
-            % Magic number (bytes 0-3)
-            header(1:4) = typecast(MJSE.MAGIC_NUMBER, 'uint8');
-            
-            % Version (bytes 4-7)
-            header(5:8) = typecast(MJSE.VERSION, 'uint8');
-            
-            % Page size (bytes 8-15)
-            header(9:16) = typecast(int64(obj.page_size), 'uint8');
-            
-            % Current write page (bytes 16-23) - start with page 0
-            header(17:24) = typecast(int64(0), 'uint8');
-            
-            % MATLAB PID (bytes 24-31)
-            matlab_pid = int64(feature('getpid'));
-            header(25:32) = typecast(matlab_pid, 'uint8');
-            
-            % Write header to file
-            fwrite(fid, header, 'uint8');
-            
-            % Allocate space for two pages (write zeros)
-            page_buffer = zeros(1, obj.page_size, 'uint8');
-            fwrite(fid, page_buffer, 'uint8');  % Page 0
-            fwrite(fid, page_buffer, 'uint8');  % Page 1
-            
-            % Flush and close
+            fwrite(fid, zeros(1, total_size, 'uint8'));
             fclose(fid);
             
-            % Create memmapfile for zero-copy access
-            % Format: header (64 bytes) + page0 (128MB) + page1 (128MB)
+            % Memory map with 8-byte header + data buffer
             obj.shm_mmap = memmapfile(obj.shm_path, ...
-                'Format', { ...
-                    'uint8', [1 obj.header_size], 'header'; ...
-                    'uint8', [1 obj.page_size], 'page0'; ...
-                    'uint8', [1 obj.page_size], 'page1' ...
-                }, ...
+                'Format', {'uint64', [1 1], 'StateFlag'; ...
+                           'uint8', [1 obj.BUFFER_SIZE], 'Data'}, ...
                 'Writable', true);
             
-            fprintf('Shared memory created: %s (%.2f MB)\n', obj.shm_path, total_size / 1024 / 1024);
-            fprintf('Memory-mapped for zero-copy access\n');
+            % Initialize to IDLE state
+            obj.shm_mmap.Data.StateFlag = obj.STATE_IDLE;
+            
+            fprintf('Shared memory created: %s (%.2f MB)\n', obj.shm_path, ...
+                total_size / 1024 / 1024);
         end
         
-        function load_java_bridge(obj)
-            %LOAD_JAVA_BRIDGE Load the Java bridge JAR
-            
-            % Get path to MJSEBridge.jar
-            script_dir = fileparts(mfilename('fullpath'));
-            jar_path = fullfile(script_dir, 'MJSEBridge.jar');
-            
-            if ~exist(jar_path, 'file')
-                error('MJSE:JarNotFound', ...
-                    'MJSEBridge.jar not found at: %s\nRun mjse_setup to build the bridge.', jar_path);
-            end
-            
-            fprintf('Loading Java bridge from: %s\n', jar_path);
-            fprintf('==== Java Bridge Loading Diagnostics ====\n');
-            
-            % 1. Check current classpath state
-            fprintf('\n[Step 1] Checking current Java classpath...\n');
-            java_classpath_before = javaclasspath('-dynamic');
-            fprintf('  Dynamic classpath entries: %d\n', length(java_classpath_before));
-            has_jar = any(contains(java_classpath_before, 'MJSEBridge.jar'));
-            fprintf('  MJSEBridge.jar already loaded: %s\n', mat2str(has_jar));
-            
-            % 2. Add JAR to classpath ONLY if missing
-            if ~has_jar
-                fprintf('\n[Step 2] Adding JAR to classpath...\n');
-                javaaddpath(jar_path);
-                fprintf('  javaaddpath() completed\n');
-            else
-                fprintf('\n[Step 2] JAR already in classpath, skipping javaaddpath\n');
-            end
-            
-            % 3. Verify JAR is now in classpath
-            fprintf('\n[Step 3] Verifying JAR in classpath...\n');
-            java_classpath_after = javaclasspath('-dynamic');
-            fprintf('  Dynamic classpath entries: %d\n', length(java_classpath_after));
-            for i = 1:length(java_classpath_after)
-                if contains(java_classpath_after{i}, 'MJSEBridge.jar')
-                    fprintf('  ✓ Found: %s\n', java_classpath_after{i});
-                end
-            end
-            
-            % 4. Check Java version compatibility
-            fprintf('\n[Step 4] Checking Java version...\n');
-            java_version = version('-java');
-            fprintf('  MATLAB Java Runtime: %s\n', java_version);
-            
-            % 5. Inspect JAR contents
-            fprintf('\n[Step 5] Inspecting JAR contents...\n');
-            [status, jar_contents] = system(sprintf('jar tf "%s"', jar_path));
-            if status == 0
-                fprintf('  JAR contents:\n');
-                jar_lines = strsplit(jar_contents, '\n');
-                for i = 1:min(10, length(jar_lines))  % Show first 10 entries
-                    if ~isempty(strtrim(jar_lines{i}))
-                        fprintf('    %s\n', jar_lines{i});
-                    end
-                end
-                if contains(jar_contents, 'mjse/Bridge.class')
-                    fprintf('  ✓ mjse/Bridge.class found in JAR\n');
-                else
-                    fprintf('  ✗ mjse/Bridge.class NOT found in JAR!\n');
-                end
-            else
-                fprintf('  Warning: Could not inspect JAR contents\n');
-            end
-            
-            % 6. Check class file version
-            fprintf('\n[Step 6] Checking Bridge.class bytecode version...\n');
-            [status, class_info] = system(sprintf('javap -verbose -cp "%s" mjse.Bridge 2>&1 | grep "major version"', jar_path));
-            if status == 0 && ~isempty(class_info)
-                fprintf('  %s\n', strtrim(class_info));
-            else
-                fprintf('  Could not determine bytecode version\n');
-            end
-            
-            % 7. Attempt to load bridge using javaObject (most robust method)
-            fprintf('\n[Step 7] Attempting to load bridge...\n');
-            fprintf('  Using javaObject(''mjse.Bridge'') - bypasses MATLAB name cache\n');
-            
-            try
-                obj.bridge = javaObject('mjse.Bridge');
-                fprintf('  ✓✓✓ SUCCESS: Bridge loaded successfully! ✓✓✓\n');
-            catch ME
-                fprintf('  ✗✗✗ FAILED: %s ✗✗✗\n', ME.message);
-                fprintf('\n[Step 8] Additional diagnostics on failure...\n');
-                
-                % Try to get more specific error info
-                fprintf('  Error identifier: %s\n', ME.identifier);
-                fprintf('  Error message: %s\n', ME.message);
-                
-                % Check if it's a bytecode version mismatch
-                if contains(ME.message, 'Unsupported') || contains(ME.message, 'version')
-                    fprintf('\n  ⚠ DIAGNOSIS: Bytecode version mismatch likely!\n');
-                    fprintf('  The Bridge.class file was compiled for a different Java version.\n');
-                    fprintf('  Bridge should be compiled for Java 8 compatibility (bytecode version 52.0)\n');
-                    fprintf('  Ensure javac is invoked with: --release 8\n');
-                elseif contains(ME.message, 'not found') || contains(ME.message, 'cannot be located')
-                    fprintf('\n  ⚠ DIAGNOSIS: Class not found in JAR or classpath issue!\n');
-                    fprintf('  Check that mjse/Bridge.class exists in the JAR.\n');
-                else
-                    fprintf('\n  ⚠ DIAGNOSIS: Unknown issue. Full error:\n');
-                    fprintf('  %s\n', getReport(ME));
-                end
-                
-                fprintf('\n========================================\n');
-                error('MJSE:JavaBridgeLoadFailed', 'Failed to load Java bridge. See diagnostics above.');
-            end
-            
-            fprintf('========================================\n');
-        end
-        
-        function launch_julia_daemon(obj)
-            %LAUNCH_JULIA_DAEMON Start the Julia worker process
+        function launch_julia_worker(obj)
+            % Launch Julia worker with port and shm path as arguments
             
             % Find Julia executable
-            julia_bin = obj.find_julia_binary();
+            repo_root = fileparts(fileparts(mfilename('fullpath')));
+            julia_dir = fullfile(repo_root, 'external', 'julia');
             
-            % Get worker script path
-            script_dir = fileparts(mfilename('fullpath'));
-            project_root = fileparts(script_dir);
-            worker_script = fullfile(project_root, 'jl_src', 'MJSEWorker.jl');
-            
-            if ~exist(worker_script, 'file')
-                error('MJSE:WorkerNotFound', 'Julia worker not found at: %s', worker_script);
-            end
-            
-            % Build Julia command
-            julia_cmd = sprintf('"%s" --project="%s" -e "include(raw\\"%s\\"); MJSEWorker.run_worker(raw\\"%s\\", raw\\"%s\\")"', ...
-                julia_bin, ...
-                fullfile(project_root, 'jl_src'), ...
-                worker_script, ...
-                obj.shm_path, ...
-                obj.socket_path);
-            
-            % Launch Julia process
             if ispc
-                obj.julia_process = System.Diagnostics.Process.Start('cmd.exe', ...
-                    sprintf('/c %s', julia_cmd));
+                julia_exe = fullfile(julia_dir, 'bin', 'julia.exe');
             else
-                % Set LD_LIBRARY_PATH to prioritize Julia's libraries over MATLAB's
-                % This prevents library conflicts without needing to rename files
-                julia_lib_path = fullfile(fileparts(fileparts(julia_bin)), 'lib', 'julia');
-                if exist(julia_lib_path, 'dir')
-                    env_prefix = sprintf('LD_LIBRARY_PATH="%s:$LD_LIBRARY_PATH" ', julia_lib_path);
-                else
-                    env_prefix = '';
-                end
-                
-                % Use system with & to run in background
-                cmd = sprintf('%s%s > /tmp/mjse_worker.log 2>&1 &', env_prefix, julia_cmd);
-                system(cmd);
+                julia_exe = fullfile(julia_dir, 'bin', 'julia');
             end
             
-            % Wait a moment for Julia to start
-            pause(2.0);
+            if ~isfile(julia_exe)
+                error('MJSE:JuliaNotFound', 'Julia not found. Run mjse_setup first.');
+            end
             
-            fprintf('Julia worker launched\n');
+            % Worker script path
+            worker_script = fullfile(repo_root, 'jl_src', 'MJSEWorker.jl');
+            
+            % Build command with LD_LIBRARY_PATH isolation on Linux
+            if isunix && ~ismac
+                julia_lib = fullfile(julia_dir, 'lib', 'julia');
+                cmd = sprintf('LD_LIBRARY_PATH="%s:$LD_LIBRARY_PATH" "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d &', ...
+                    julia_lib, julia_exe, fullfile(repo_root, 'jl_src'), ...
+                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
+            else
+                cmd = sprintf('"%s" --project="%s" "%s" --port %d --shm "%s" --pid %d &', ...
+                    julia_exe, fullfile(repo_root, 'jl_src'), ...
+                    worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
+            end
+            
+            fprintf('Launching Julia worker...\n');
+            [status, ~] = system(cmd);
+            
+            if status ~= 0
+                error('MJSE:LaunchFailed', 'Failed to launch Julia worker');
+            end
+            
+            % Give Julia time to start
+            pause(2);
+        end
+        
+        function connect_tcp(obj)
+            % Connect to Julia TCP server
+            max_attempts = 10;
+            for attempt = 1:max_attempts
+                try
+                    obj.tcp_client = tcpclient('127.0.0.1', obj.tcp_port, 'Timeout', 5);
+                    fprintf('TCP connected to 127.0.0.1:%d\n', obj.tcp_port);
+                    return;
+                catch
+                    if attempt == max_attempts
+                        error('MJSE:ConnectionFailed', 'Failed to connect to Julia after %d attempts', max_attempts);
+                    end
+                    pause(0.5);
+                end
+            end
         end
         
         function perform_handshake(obj)
-            %PERFORM_HANDSHAKE Establish connection and perform binary handshake
+            % Perform handshake with Julia
+            write(obj.tcp_client, uint8('HANDSHAKE'));
             
-            % Wait for socket to be created by Julia
-            max_wait = 30;  % seconds
-            wait_time = 0;
-            while ~exist(obj.socket_path, 'file') && wait_time < max_wait
-                pause(0.5);
-                wait_time = wait_time + 0.5;
+            % Wait for response
+            pause(0.2);
+            if obj.tcp_client.BytesAvailable > 0
+                response = read(obj.tcp_client, obj.tcp_client.BytesAvailable, 'char');
+                if ~strcmp(strtrim(response), 'ACK')
+                    error('MJSE:HandshakeFailed', 'Invalid handshake response');
+                end
+            else
+                error('MJSE:HandshakeFailed', 'No handshake response');
             end
             
-            if ~exist(obj.socket_path, 'file')
-                error('MJSE:SocketTimeout', 'Julia worker did not create socket within %d seconds', max_wait);
-            end
-            
-            % Connect to UNIX socket
-            connected = obj.bridge.connectUnix(obj.socket_path);
-            if ~connected
-                error('MJSE:ConnectionFailed', 'Failed to connect to Julia worker socket');
-            end
-            
-            fprintf('Connected to Julia worker\n');
-            
-            % Send handshake message
-            handshake_msg = uint8('MJSE_HANDSHAKE');
-            handshake_msg(end+1:16) = 0;  % Pad to 16 bytes
-            
-            sent = obj.bridge.send(handshake_msg);
-            if sent ~= 16
-                error('MJSE:HandshakeFailed', 'Failed to send handshake message');
-            end
-            
-            % Receive acknowledgment
-            ack = obj.bridge.receive(16);
-            if isempty(ack) || length(ack) ~= 16
-                error('MJSE:HandshakeFailed', 'Failed to receive handshake acknowledgment');
-            end
-            
-            expected_ack = uint8('MJSE_ACK');
-            expected_ack(end+1:16) = 0;
-            
-            if ~isequal(uint8(ack'), expected_ack)
-                error('MJSE:HandshakeFailed', 'Invalid handshake acknowledgment');
-            end
-            
-            fprintf('Handshake completed\n');
+            fprintf('Handshake complete\n');
         end
         
-        function julia_bin = find_julia_binary(obj)
-            %FIND_JULIA_BINARY Locate Julia executable
+        function write_shared_memory(obj, data)
+            % Write data to shared memory and set flag
             
-            % Check for portable Julia in external/
-            script_dir = fileparts(mfilename('fullpath'));
-            project_root = fileparts(script_dir);
-            
-            if ispc
-                portable_julia = fullfile(project_root, 'external', 'julia', 'bin', 'julia.exe');
+            % Convert data to bytes
+            if isnumeric(data)
+                byte_data = typecast(data(:), 'uint8');
             else
-                portable_julia = fullfile(project_root, 'external', 'julia', 'bin', 'julia');
+                error('MJSE:UnsupportedType', 'Only numeric data supported');
             end
             
-            if exist(portable_julia, 'file')
-                julia_bin = portable_julia;
-                return;
+            if length(byte_data) > obj.BUFFER_SIZE
+                error('MJSE:DataTooLarge', 'Data exceeds buffer size');
             end
             
-            % Try system Julia
-            [status, result] = system('julia --version');
-            if status == 0
-                if ispc
-                    julia_bin = 'julia.exe';
-                else
-                    julia_bin = 'julia';
+            % Write data
+            obj.shm_mmap.Data.Data(1:length(byte_data)) = byte_data;
+            
+            % Set state to READY
+            obj.shm_mmap.Data.StateFlag = obj.STATE_READY;
+        end
+        
+        function result = wait_and_read(obj)
+            % Wait for Julia to complete and read result
+            
+            max_wait = 30;  % 30 second timeout
+            start_time = tic;
+            
+            while toc(start_time) < max_wait
+                current_state = obj.shm_mmap.Data.StateFlag;
+                
+                if current_state == obj.STATE_DONE
+                    % Read result (for now, just echo back the data)
+                    % TODO: Implement proper result reading with metadata
+                    result = obj.shm_mmap.Data.Data;
+                    
+                    % Reset to IDLE
+                    obj.shm_mmap.Data.StateFlag = obj.STATE_IDLE;
+                    return;
                 end
-                return;
+                
+                pause(0.01);
             end
             
-            error('MJSE:JuliaNotFound', ...
-                'Julia not found. Run mjse_setup to download portable Julia or install Julia 1.12+');
+            error('MJSE:Timeout', 'Timeout waiting for Julia');
         end
         
         function cleanup(obj)
-            %CLEANUP Release all resources
+            % Clean up resources
             
-            % Close bridge connection
-            if ~isempty(obj.bridge)
-                try
-                    obj.bridge.close();
-                catch
+            try
+                if ~isempty(obj.tcp_client)
+                    clear obj.tcp_client;
+                    obj.tcp_client = [];
                 end
-                obj.bridge = [];
+            catch
             end
             
-            % Terminate Julia process (if handle exists)
-            if ~isempty(obj.julia_process)
-                try
-                    if ispc
-                        obj.julia_process.Kill();
-                    end
-                catch
+            try
+                if ~isempty(obj.shm_mmap)
+                    clear obj.shm_mmap;
+                    obj.shm_mmap = [];
                 end
-                obj.julia_process = [];
+            catch
             end
             
-            % Close memory map first
-            if ~isempty(obj.shm_mmap)
-                try
-                    delete(obj.shm_mmap);
-                catch
-                end
-                obj.shm_mmap = [];
-            end
-            
-            % Remove shared memory file
-            if ~isempty(obj.shm_path) && exist(obj.shm_path, 'file')
-                try
+            try
+                if ~isempty(obj.shm_path) && isfile(obj.shm_path)
                     delete(obj.shm_path);
-                catch
                 end
+            catch
             end
-            
-            % Remove socket file
-            if ~isempty(obj.socket_path) && exist(obj.socket_path, 'file')
-                try
-                    delete(obj.socket_path);
-                catch
-                end
-            end
+        end
+    end
+    
+    methods (Access = private, Static)
+        function delete(obj)
+            obj.shutdown();
         end
     end
 end

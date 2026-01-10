@@ -1,17 +1,15 @@
 function mjse_setup()
-% MJSE_SETUP Download portable Julia, configure jlcall, and prepare MJSE environment
+% MJSE_SETUP Download portable Julia and prepare MJSE environment (Universal Hybrid)
 %
 % This script prepares the MJSE environment:
 % 1. Downloads portable Julia 1.12.x runtime based on architecture
-% 2. Sets up library isolation via LD_LIBRARY_PATH (no file modification)
-% 3. Builds the Java bridge (MJSEBridge.jar)
-% 4. Configures jlcall to use the private Julia runtime
-% 5. Prewarms Julia package cache via Pkg.precompile()
+% 2. Sets up library isolation via LD_LIBRARY_PATH (Linux only)
+% 3. Configures jlcall to use the private Julia runtime
+% 4. Prewarms Julia package cache (ArgParse, Sockets, Mmap)
 %
-% Environment variables:
-%   MJSE_SHADOW_LIBS - Set to '1' to indicate library isolation is active
+% NO Java Bridge required in Universal Hybrid architecture
 
-    fprintf('=== MJSE Setup ===\n\n');
+    fprintf('=== MJSE Setup (Universal Hybrid: TCP + Shared Memory) ===\n\n');
     
     % Get project root directory
     script_dir = fileparts(mfilename('fullpath'));
@@ -31,29 +29,24 @@ function mjse_setup()
         fprintf('Step 1: Portable Julia already present, skipping download\n');
     end
     
-    % Step 2: Library renaming on Linux (typically not needed)
-    shadow_libs = getenv('MJSE_SHADOW_LIBS');
-    if ~isempty(shadow_libs) && strcmp(shadow_libs, '1') && isunix && ~ismac
-        fprintf('\nStep 2: Library isolation via LD_LIBRARY_PATH (skipping renaming)...\n');
-        fprintf('  Note: Library renaming disabled - it breaks Julia dependencies\n');
-        fprintf('  Julia will use its own libraries via LD_LIBRARY_PATH when launched\n');
+    % Step 2: LD_LIBRARY_PATH setup message (Linux only)
+    if isunix && ~ismac
+        fprintf('\nStep 2: Library isolation configured via LD_LIBRARY_PATH\n');
+        fprintf('  Julia will use its own libraries when launched\n');
     else
-        fprintf('\nStep 2: Skipping library modifications (not needed)\n');
+        fprintf('\nStep 2: No library isolation needed on this platform\n');
     end
     
-    % Step 3: Build Java bridge
-    fprintf('\nStep 3: Building Java bridge...\n');
-    build_java_bridge();
-    
-    % Step 4: Prewarm Julia cache
-    fprintf('\nStep 4: Prewarming Julia cache...\n');
+    % Step 3: Prewarm Julia cache
+    fprintf('\nStep 3: Prewarming Julia cache...\n');
     prewarm_julia_cache(julia_dir);
     
     fprintf('\n=== MJSE Setup Complete ===\n');
-    fprintf('You can now use jlcall:\n');
-    fprintf('  jlcall(''start'');\n');
-    fprintf('  result = jlcall(''sum'', [1 2 3 4 5]);\n');
-    fprintf('  jlcall(''stop'');\n');
+    fprintf('You can now use MJSE:\n');
+    fprintf('  engine = MJSE();\n');
+    fprintf('  engine.start();\n');
+    fprintf('  result = engine.call(''process'', data);\n');
+    fprintf('  engine.shutdown();\n');
 end
 
 function download_julia(julia_dir)
@@ -144,26 +137,8 @@ function download_julia(julia_dir)
     end
 end
 
-function build_java_bridge()
-    % Build the Java bridge
-    
-    script_dir = fileparts(mfilename('fullpath'));
-    bridge_dir = fullfile(script_dir, 'm_src', 'mjse');
-    
-    % Run bridge_build.m
-    current_dir = pwd;
-    try
-        cd(bridge_dir);
-        bridge_build();
-        cd(current_dir);
-    catch ME
-        cd(current_dir);
-        rethrow(ME);
-    end
-end
-
 function prewarm_julia_cache(julia_dir)
-    % Prewarm Julia package cache by precompiling
+    % Prewarm Julia package cache by precompiling (including ArgParse)
     
     % Find Julia binary
     if ispc
@@ -181,10 +156,10 @@ function prewarm_julia_cache(julia_dir)
     script_dir = fileparts(mfilename('fullpath'));
     jl_project = fullfile(script_dir, 'jl_src');
     
-    fprintf('  Precompiling Julia packages...\n');
+    fprintf('  Installing and precompiling Julia packages (ArgParse, Sockets, Mmap)...\n');
     
-    % Run Julia precompilation
-    cmd = sprintf('"%s" --project="%s" -e "using Pkg; Pkg.precompile()"', ...
+    % Run Julia precompilation with package installation
+    cmd = sprintf('"%s" --project="%s" -e "using Pkg; Pkg.add(\\"ArgParse\\"); Pkg.precompile()"', ...
         julia_bin, jl_project);
     
     [status, output] = system(cmd);

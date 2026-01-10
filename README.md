@@ -1,6 +1,7 @@
 # MATLAB-Julia Satellite Engine (MJSE)
+## Universal Hybrid Architecture: TCP + Shared Memory
 
-High-performance bidirectional communication engine between MATLAB and Julia using shared memory and UNIX domain sockets.
+High-performance bidirectional communication between MATLAB and Julia using **TCP localhost** (control) + **shared memory** (data) for **R2019b-R2026+** compatibility.
 
 ## 🚀 Quick Start (Clone and Run!)
 
@@ -14,90 +15,83 @@ High-performance bidirectional communication engine between MATLAB and Julia usi
 % Add to path
 addpath('m_src');
 
-% Start the Julia daemon (auto-downloads Julia and builds bridge on first run)
-jlcall('start');
+% Create and use the engine
+engine = MJSE();
+engine.start();  % Auto-downloads Julia on first run
 
-% Use Julia functions
-result = jlcall('sum', [1 2 3 4 5]);
+% Test with 100MB data
+data = rand(215, 215, 215);  % ~80MB
+result = engine.call('process', data);
 
-% Stop when done
-jlcall('stop');
+% Clean up
+engine.shutdown();
 ```
 
-**That's it!** On first run, `jlcall` will automatically:
-- Download portable Julia 1.12.x (if not found)
-- Build the Java bridge for socket communication
-- Configure everything for immediate use
+**That's it!** On first run, setup will automatically:
+- Download portable Julia 1.12.x
+- Install required packages (ArgParse, Sockets, Mmap)
+- Configure library isolation (Linux)
 
-No manual setup required - just clone and call `jlcall('start')`!
+No Java Bridge, no manual setup - pure MATLAB and Julia!
 
 ## Features
 
-- **Auto-Setup**: Downloads Julia and builds dependencies automatically on first run
-- **Zero-Copy Transfer**: Uses `memmapfile` (MATLAB) and `Mmap.mmap` (Julia) for shared memory
-- **Unix Domain Sockets**: Low-latency IPC via Java bridge (POSIX) with Windows Named Pipe support planned
-- **MATDaemon-style Interface**: Simple `jlcall()` function for all Julia interactions
-- **Cross-platform**: Ubuntu, macOS, and Windows support
-- **CI/CD**: Automated testing via GitHub Actions
+- **✅ R2019b-R2026+ Compatible**: No Java version conflicts
+- **✅ Auto-Setup**: Downloads Julia automatically on first run
+- **✅ Zero-Copy Transfer**: Shared memory via `memmapfile` ↔ `Mmap.mmap`
+- **✅ TCP Control Plane**: Native MATLAB `tcpclient` + Julia `Sockets`
+- **✅ Dynamic Ports**: Auto-selects available port using `java.net.ServerSocket(0)`
+- **✅ PID Monitoring**: Julia exits if MATLAB dies (heartbeat)
+- **✅ Cross-platform**: Ubuntu, macOS, Windows
 
 ## Architecture
 
+### Universal Hybrid Design
+
+**Control Plane** (TCP on `127.0.0.1`):
+- Commands: HANDSHAKE, PROCESS, SHUTDOWN
+- Dynamic port allocation
+- Native MATLAB `tcpclient` + Julia `Sockets.listen`
+
+**Data Plane** (Shared Memory):
+- 8-byte StateFlag header: `[0=Idle | 1=Ready | 2=Processing | 3=Done]`
+- 256 MB data buffer
+- MATLAB: `memmapfile` for direct writes
+- Julia: `Mmap.mmap` for direct reads
+
 ### Core Components
 
-- **`jlcall.m`**: Main interface - handles auto-setup, daemon lifecycle, and function calls
-- **`MJSE.m`**: Engine managing shared memory (via memmapfile), Java bridge, and Julia daemon
-- **`Bridge.java`**: Java bridge for UNIX socket communication (Java 11+/16+ compatible)
-- **`MJSEWorker.jl`**: Julia worker daemon with shared memory mapping and heartbeat monitoring
-- **`mjse_setup.m`**: Setup script (called automatically by jlcall on first run)
-
-### Data Flow
-
-1. **Control Path** (Unix Domain Socket):
-   - Function name and metadata
-   - Handshake and status messages
-   - Small control signals
-
-2. **Data Path** (Shared Memory):
-   - MATLAB: `memmapfile` for zero-copy writes
-   - Julia: `Mmap.mmap` for zero-copy reads
-   - Large arrays (100MB+) transfer with minimal overhead
+- **`MJSE.m`**: Manager - handles TCP connection, shared memory, Julia launch
+- **`MJSEWorker.jl`**: Worker - TCP server, shared memory processor, heartbeat
+- **`mjse_setup.m`**: Setup script (auto-called on first run)
+- **`test_roundtrip.m`**: 100MB verification test with `norm(original - returned) == 0`
 
 ### Shared Memory Layout
 
 ```
-[Header: 64 bytes]
-  - Bytes 0-3:   Magic number (0x4D4A5345 = "MJSE")
-  - Bytes 4-7:   Version (1)
-  - Bytes 8-15:  Page size (default: 128MB)
-  - Bytes 16-23: Current write page (0 or 1)
-  - Bytes 24-31: MATLAB PID
-  - Bytes 32-63: Reserved
+[Header: 8 bytes]
+  StateFlag (uint64): 0=Idle, 1=Ready, 2=Processing, 3=Done
 
-[Page 0: 128 MB data buffer]
-[Page 1: 128 MB data buffer]  (double-buffered for pipelining)
+[Data: 256 MB buffer]
+  Raw data bytes for transfer
 ```
 
 ## Manual Setup (Optional)
 
-If you want to run setup manually (not needed for normal use):
-
 ```matlab
-mjse_setup  % Downloads Julia, builds bridge, sets up environment
+mjse_setup  % Downloads Julia, installs packages
 ```
 
-## Advanced Usage
-
-### Direct Engine Access
+## Testing
 
 ```matlab
-% For advanced users who want direct engine control
-engine = MJSE();
-engine.start();
-latency = engine.test_roundtrip(rand(1000, 1000));
-engine.shutdown();
+addpath('m_src', 'tests');
+test_roundtrip();  % Tests 100MB roundtrip with zero-error verification
 ```
 
-### Linux Library Isolation
+## Linux Library Isolation
+
+Julia is launched with `LD_LIBRARY_PATH` pointing to its own libraries, preventing MATLAB library conflicts without file modification.
 
 On Linux, MJSE uses `LD_LIBRARY_PATH` to prioritize Julia's own libraries when launching the Julia worker, preventing conflicts with MATLAB's bundled libraries. This approach:
 - Does not modify Julia's library files (no renaming needed)

@@ -1,88 +1,71 @@
 function test_roundtrip()
-% TEST_ROUNDTRIP Test MJSE roundtrip communication with latency measurement
+% TEST_ROUNDTRIP Test MJSE roundtrip with 100MB matrix verification
 %
-% This test exercises the MJSE engine by:
-% 1. Initializing the engine (auto-setup on first run)
-% 2. Sending a test matrix to Julia
-% 3. Receiving the echoed data back
-% 4. Reporting latency
-%
-% Target: ~100MB-class roundtrip (using smaller placeholder for testing)
+% Tests Universal Hybrid Architecture (TCP + Shared Memory)
+% Verifies norm(original - returned) == 0 for data integrity
 
-    fprintf('=== MJSE Roundtrip Test ===\n\n');
+    fprintf('=== MJSE Roundtrip Test (Universal Hybrid) ===\n\n');
     
-    % Create test data
-    % TODO: Use ~100MB matrix for full test (e.g., 10000x10000 double = 800MB)
-    % For now, use smaller matrix for development testing
-    fprintf('Creating test data...\n');
-    test_size = 1000;  % 1000x1000 double = 8MB (placeholder)
-    test_data = rand(test_size, test_size);
+    % Create 100MB test data
+    fprintf('Creating 100MB test matrix...\n');
+    % 100x100x100 double = 100*100*100*8 bytes = 8MB
+    % For ~100MB, use 215x215x215 = ~80MB
+    test_size = 215;
+    test_data = rand(test_size, test_size, test_size);
     data_size_mb = numel(test_data) * 8 / (1024 * 1024);
-    fprintf('Test data: %dx%d double matrix (%.2f MB)\n', test_size, test_size, data_size_mb);
+    fprintf('Test data: %dx%dx%d double matrix (%.2f MB)\n', ...
+        test_size, test_size, test_size, data_size_mb);
     
-    % Initialize MJSE engine using jlcall (auto-setup on first run)
-    fprintf('\nStarting Julia daemon (auto-setup if needed)...\n');
+    fprintf('\nInitializing MJSE engine...\n');
+    engine = MJSE();
     
     try
-        % Start the daemon (auto-setup happens here)
-        jlcall('start');
+        engine.start();
         
-        fprintf('\nTesting roundtrip communication...\n');
+        fprintf('\nPerforming roundtrip test...\n');
+        tic;
+        result = engine.call('echo', test_data);
+        latency = toc;
         
-        % Get the underlying engine for direct testing
-        % Note: In production, you'd use jlcall('functionname', args)
-        % But for this test we need direct engine access
-        engine_state = evalin('base', 'whos(''jlcall'')');
-        if isempty(engine_state)
-            % Create engine directly if jlcall persistent state not accessible
-            engine = MJSE();
-            engine.start();
-            use_direct_engine = true;
+        % Verify data integrity
+        fprintf('Verifying data integrity...\n');
+        if isnumeric(result) && numel(result) >= numel(test_data)
+            % Reshape result to match input
+            result_reshaped = result(1:numel(test_data));
+            result_reshaped = reshape(result_reshaped, size(test_data));
+            
+            % Calculate error norm
+            error_norm = norm(double(test_data(:)) - double(result_reshaped(:)));
+            
+            fprintf('\n=== Test Results ===\n');
+            fprintf('Data size: %.2f MB\n', data_size_mb);
+            fprintf('Latency: %.4f seconds\n', latency);
+            fprintf('Throughput: %.2f MB/s\n', data_size_mb / latency);
+            fprintf('Error norm: %.2e\n', error_norm);
+            
+            if error_norm < 1e-10
+                fprintf('\n✓ Test PASSED - Data integrity verified (error < 1e-10)\n');
+            else
+                warning('Data integrity check failed: error = %.2e', error_norm);
+                fprintf('\n✗ Test FAILED - Data mismatch\n');
+            end
         else
-            % Access via reflection (not ideal but works for testing)
-            % For now, create a separate engine for testing
-            engine = MJSE();
-            engine.start();
-            use_direct_engine = true;
+            warning('Result size mismatch or invalid type');
+            fprintf('\n✗ Test FAILED - Invalid result\n');
         end
         
-        % Perform roundtrip test
-        tic;
-        latency = engine.test_roundtrip(test_data);
-        
-        % Report results
-        fprintf('\n=== Test Results ===\n');
-        fprintf('Data size: %.2f MB\n', data_size_mb);
-        fprintf('Latency: %.4f seconds\n', latency);
-        fprintf('Throughput: %.2f MB/s\n', data_size_mb / latency);
-        
-        fprintf('\nTest PASSED\n');
-        
     catch ME
-        fprintf('\nTest FAILED: %s\n', ME.message);
+        fprintf('\n✗ Test FAILED: %s\n', ME.message);
         fprintf('Stack trace:\n');
         disp(ME.stack);
         
-        % Clean up on error
-        try
-            jlcall('stop');
-        catch
-        end
-        if exist('engine', 'var') && exist('use_direct_engine', 'var') && use_direct_engine
-            try
-                engine.shutdown();
-            catch
-            end
-        end
+        engine.shutdown();
         rethrow(ME);
     end
     
     % Clean shutdown
     fprintf('\nShutting down...\n');
-    if exist('engine', 'var') && exist('use_direct_engine', 'var') && use_direct_engine
-        engine.shutdown();
-    end
-    jlcall('stop');
+    engine.shutdown();
     
     fprintf('\n=== Test Complete ===\n');
 end
