@@ -136,7 +136,7 @@ end
 function start_tcp_server(state::WorkerState)
     try
         @info "Starting TCP server" port=state.port
-        state.server = listen(IPv4(0), state.port)  # Bind to 127.0.0.1 implicitly
+        state.server = listen(ip"127.0.0.1", state.port)  # Explicitly bind to localhost
         @info "TCP server listening" port=state.port
         return true
     catch e
