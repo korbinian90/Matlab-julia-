@@ -25,6 +25,14 @@ jobs:
       if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y patchelf
     
+    - name: Cache Julia installation
+      uses: actions/cache@v4
+      with:
+        path: external/julia
+        key: julia-1.12.4-${{ runner.os }}-${{ runner.arch }}
+        restore-keys: |
+          julia-1.12.4-${{ runner.os }}-
+    
     - name: Set up MATLAB
       uses: matlab-actions/setup-matlab@v2
       with:

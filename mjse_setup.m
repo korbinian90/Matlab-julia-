@@ -50,22 +50,18 @@ function mjse_setup()
 end
 
 function download_julia(julia_dir)
-    % Download portable Julia based on architecture
+    % Download portable Julia based on architecture with robust error handling
     
     % Determine architecture
     arch = computer('arch');
     
-    % Map MATLAB arch to Julia platform
-    % TODO: Actual download URLs would come from julialang.org
-    % For now, we'll create placeholder structure
-    
     fprintf('  Detected architecture: %s\n', arch);
     
-    % Determine Julia download URL based on platform
+    % Determine Julia download URL based on platform (Julia 1.12.4 - 2026 update)
     if ispc
         if strcmp(arch, 'win64')
             julia_platform = 'windows-x86_64';
-            julia_url = 'https://julialang-s3.julialang.org/bin/winnt/x64/1.12/julia-1.12.0-win64.zip';
+            julia_url = 'https://julialang-s3.julialang.org/bin/winnt/x64/1.12/julia-1.12.4-win64.zip';
             archive_ext = 'zip';
         else
             error('MJSE:UnsupportedPlatform', 'Unsupported Windows architecture: %s', arch);
@@ -73,7 +69,7 @@ function download_julia(julia_dir)
     elseif ismac
         if strcmp(arch, 'maci64') || strcmp(arch, 'maca64')
             julia_platform = 'macos-x86_64';
-            julia_url = 'https://julialang-s3.julialang.org/bin/mac/x64/1.12/julia-1.12.0-mac64.tar.gz';
+            julia_url = 'https://julialang-s3.julialang.org/bin/mac/x64/1.12/julia-1.12.4-mac64.tar.gz';
             archive_ext = 'tar.gz';
         else
             error('MJSE:UnsupportedPlatform', 'Unsupported macOS architecture: %s', arch);
@@ -81,7 +77,7 @@ function download_julia(julia_dir)
     elseif isunix
         if strcmp(arch, 'glnxa64')
             julia_platform = 'linux-x86_64';
-            julia_url = 'https://julialang-s3.julialang.org/bin/linux/x64/1.12/julia-1.12.0-linux-x86_64.tar.gz';
+            julia_url = 'https://julialang-s3.julialang.org/bin/linux/x64/1.12/julia-1.12.4-linux-x86_64.tar.gz';
             archive_ext = 'tar.gz';
         else
             error('MJSE:UnsupportedPlatform', 'Unsupported Linux architecture: %s', arch);
@@ -96,16 +92,33 @@ function download_julia(julia_dir)
     % Download Julia archive
     archive_path = fullfile(fileparts(julia_dir), ['julia.' archive_ext]);
     
-    fprintf('  Downloading Julia (this may take several minutes)...\n');
-    
-    try
-        websave(archive_path, julia_url);
-        fprintf('  Download complete\n');
-    catch ME
-        warning('MJSE:DownloadFailed', 'Failed to download Julia: %s', ME.message);
-        fprintf('  Please download Julia 1.12.x manually from https://julialang.org/downloads/\n');
-        fprintf('  and extract to: %s\n', julia_dir);
-        return;
+    % Check if archive already exists (avoid re-downloading)
+    if exist(archive_path, 'file')
+        fprintf('  Archive already downloaded, skipping download\n');
+    else
+        fprintf('  Downloading Julia (~150MB, this may take several minutes)...\n');
+        
+        try
+            % Increase timeout to 600 seconds for large download
+            opts = weboptions('Timeout', 600);
+            websave(archive_path, julia_url, opts);
+            fprintf('  Download complete\n');
+        catch ME
+            warning('MJSE:DownloadFailed', 'Failed to download Julia: %s', ME.message);
+            fprintf('  Please download Julia 1.12.4 manually from https://julialang.org/downloads/\n');
+            fprintf('  and extract to: %s\n', julia_dir);
+            return;
+        end
+        
+        % Verify download (checksum - ensure file > 100MB)
+        archive_info = dir(archive_path);
+        if isempty(archive_info) || archive_info.bytes < 100e6
+            warning('MJSE:CorruptArchive', 'Downloaded archive is too small (< 100MB). Connection may have failed.');
+            fprintf('  Deleting corrupt archive. Please run setup again.\n');
+            delete(archive_path);
+            return;
+        end
+        fprintf('  Archive verified (%.1f MB)\n', archive_info.bytes / 1e6);
     end
     
     % Extract archive
