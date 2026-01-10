@@ -168,7 +168,12 @@ function apply_patchelf_shadowing(julia_dir)
     % Libraries to shadow (the "Trio")
     libs_to_shadow = {'libstdc++.so.6', 'libgcc_s.so.1', 'libgfortran.so.5'};
     
-    % Step 1: Physically rename the trio in lib/julia (where they live)
+    % Step 1: Move originals to backup, create renamed versions
+    backup_dir = fullfile(julia_lib_julia, '.backup_libs');
+    if ~exist(backup_dir, 'dir')
+        mkdir(backup_dir);
+    end
+    
     for i = 1:length(libs_to_shadow)
         lib_name = libs_to_shadow{i};
         lib_path = fullfile(julia_lib_julia, lib_name);
@@ -192,10 +197,15 @@ function apply_patchelf_shadowing(julia_dir)
         end
         shadowed_path = fullfile(julia_lib_julia, shadowed_name);
         
-        % Physically rename the library (no symlinks)
+        % Copy to shadowed name, then move original to backup
         if exist(lib_path, 'file') && ~exist(shadowed_path, 'file')
-            fprintf('    Renaming %s -> %s\n', lib_name, shadowed_name);
-            movefile(lib_path, shadowed_path);
+            fprintf('    Creating shadowed version: %s\n', shadowed_name);
+            copyfile(lib_path, shadowed_path);
+            % Move original to backup (after copy, so patching can reference it)
+            backup_path = fullfile(backup_dir, lib_name);
+            if ~exist(backup_path, 'file')
+                movefile(lib_path, backup_path);
+            end
         end
     end
     
@@ -251,13 +261,27 @@ function apply_patchelf_shadowing(julia_dir)
         fprintf('  ✓ Julia verification passed\n');
     else
         warning('MJSE:JuliaVerificationFailed', 'Julia verification failed:\n%s', output);
+        
+        % Run ldd to diagnose missing dependencies
+        fprintf('  Running ldd diagnostics to find missing dependencies...\n');
+        [~, ldd_check] = system(sprintf('find "%s" -name "*.so*" -exec ldd {} + 2>/dev/null | grep "not found"', julia_lib));
+        if ~isempty(strtrim(ldd_check))
+            fprintf('  Missing dependencies found:\n%s\n', ldd_check);
+        else
+            fprintf('  No missing dependencies found via ldd\n');
+        end
+        
+        % Also check the julia binary itself
+        [~, bin_ldd] = system(sprintf('ldd "%s" 2>&1', julia_bin));
+        fprintf('  Julia binary dependencies:\n%s\n', bin_ldd);
     end
     
     fprintf('  Library shadowing complete - Julia isolated from MATLAB libs\n');
 end
 
 function so_files = find_so_files_recursive(root_dir)
-    % Recursively find all .so* files in directory tree
+    % Recursively find all .so* files AND any ELF binaries in directory tree
+    % This ensures we catch all patchable files, not just those ending in .so
     so_files = {};
     
     % Get items in current directory
@@ -271,6 +295,11 @@ function so_files = find_so_files_recursive(root_dir)
             continue;
         end
         
+        % Skip backup directory
+        if strcmp(item.name, '.backup_libs')
+            continue;
+        end
+        
         full_path = fullfile(root_dir, item.name);
         
         if item.isdir
@@ -278,11 +307,21 @@ function so_files = find_so_files_recursive(root_dir)
             sub_files = find_so_files_recursive(full_path);
             so_files = [so_files, sub_files];
         else
-            % Check if file is a .so file (includes .so, .so.1, .so.1.2, etc)
+            % Check if file is a .so file OR an ELF binary
+            % Skip symlinks
+            [status, ~] = system(sprintf('test -L "%s"', full_path));
+            if status == 0  % Is a symlink, skip
+                continue;
+            end
+            
+            % Check if it's an .so file or patchable ELF file
             if contains(item.name, '.so')
-                % Skip symlinks (check if readlink works)
-                [status, ~] = system(sprintf('test -L "%s"', full_path));
-                if status ~= 0  % Not a symlink
+                % Definitely a shared library
+                so_files{end+1} = full_path;
+            else
+                % Check if it's an ELF file (let patchelf decide if it's patchable)
+                [status, ~] = system(sprintf('file "%s" 2>/dev/null | grep -q ELF', full_path));
+                if status == 0
                     so_files{end+1} = full_path;
                 end
             end
