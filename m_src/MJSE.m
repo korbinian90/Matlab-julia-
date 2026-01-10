@@ -238,89 +238,102 @@ classdef MJSE < handle
             end
             
             fprintf('Loading Java bridge from: %s\n', jar_path);
+            fprintf('==== Java Bridge Loading Diagnostics ====\n');
             
-            % Add JAR to dynamic Java classpath if not already present
-            java_classpath = javaclasspath('-dynamic');
-            if ~any(strcmp(java_classpath, jar_path))
+            % 1. Check current classpath state
+            fprintf('\n[Step 1] Checking current Java classpath...\n');
+            java_classpath_before = javaclasspath('-dynamic');
+            fprintf('  Dynamic classpath entries: %d\n', length(java_classpath_before));
+            has_jar = any(contains(java_classpath_before, 'MJSEBridge.jar'));
+            fprintf('  MJSEBridge.jar already loaded: %s\n', mat2str(has_jar));
+            
+            % 2. Add JAR to classpath ONLY if missing
+            if ~has_jar
+                fprintf('\n[Step 2] Adding JAR to classpath...\n');
                 javaaddpath(jar_path);
-                fprintf('Added JAR to Java classpath\n');
-                
-                % CRITICAL: clear java flushes MATLAB's Java class cache
-                % This prevents classloader isolation from blacklisting classes
-                % that may have failed to load in previous attempts
-                clear java;
-                fprintf('Cleared Java class cache to reset classloader\n');
-                
-                % Brief pause to allow JVM to reinitialize
-                pause(0.1);
+                fprintf('  javaaddpath() completed\n');
             else
-                fprintf('JAR already in Java classpath\n');
+                fprintf('\n[Step 2] JAR already in classpath, skipping javaaddpath\n');
             end
             
-            % Verify JAR is in classpath
-            java_classpath = javaclasspath('-dynamic');
-            fprintf('Current dynamic Java classpath:\n');
-            for i = 1:length(java_classpath)
-                fprintf('  %s\n', java_classpath{i});
-            end
-            
-            % Check MATLAB's Java version
-            fprintf('\nMATLAB Java version:\n');
-            version_output = version('-java');
-            fprintf('  %s\n', version_output);
-            
-            % Try to create bridge instance
-            try
-                % Try method 1: Direct instantiation
-                obj.bridge = mjse.Bridge();
-                fprintf('Java bridge loaded successfully\n');
-            catch ME1
-                fprintf('Method 1 (direct instantiation) failed: %s\n', ME1.message);
-                
-                % Clear Java cache before trying next method to reset classloader
-                fprintf('Clearing Java cache before trying method 2...\n');
-                clear java;
-                pause(0.1);
-                
-                try
-                    % Try method 2: Using javaObject
-                    obj.bridge = javaObject('mjse.Bridge');
-                    fprintf('Java bridge loaded successfully (via javaObject)\n');
-                catch ME2
-                    fprintf('Method 2 (javaObject) failed: %s\n', ME2.message);
-                    
-                    % Clear Java cache before trying next method to reset classloader
-                    fprintf('Clearing Java cache before trying method 3...\n');
-                    clear java;
-                    pause(0.1);
-                    
-                    try
-                        % Try method 3: Import first, then instantiate
-                        import mjse.*;
-                        obj.bridge = Bridge();
-                        fprintf('Java bridge loaded successfully (via import)\n');
-                    catch ME3
-                        fprintf('Method 3 (import) failed: %s\n', ME3.message);
-                        
-                        % Additional diagnostics
-                        fprintf('\nDebugging information:\n');
-                        fprintf('Trying to list classes in JAR...\n');
-                        [~, jar_contents] = system(sprintf('jar tf "%s"', jar_path));
-                        fprintf('JAR contents:\n%s\n', jar_contents);
-                        
-                        % Try to check if class exists in classpath
-                        fprintf('\nChecking if class exists...\n');
-                        try
-                            which('mjse.Bridge', '-all')
-                        catch
-                            fprintf('which command failed\n');
-                        end
-                        
-                        % Rethrow the first error
-                        rethrow(ME1);
-                    end
+            % 3. Verify JAR is now in classpath
+            fprintf('\n[Step 3] Verifying JAR in classpath...\n');
+            java_classpath_after = javaclasspath('-dynamic');
+            fprintf('  Dynamic classpath entries: %d\n', length(java_classpath_after));
+            for i = 1:length(java_classpath_after)
+                if contains(java_classpath_after{i}, 'MJSEBridge.jar')
+                    fprintf('  ✓ Found: %s\n', java_classpath_after{i});
                 end
             end
+            
+            % 4. Check Java version compatibility
+            fprintf('\n[Step 4] Checking Java version...\n');
+            java_version = version('-java');
+            fprintf('  MATLAB Java Runtime: %s\n', java_version);
+            
+            % 5. Inspect JAR contents
+            fprintf('\n[Step 5] Inspecting JAR contents...\n');
+            [status, jar_contents] = system(sprintf('jar tf "%s"', jar_path));
+            if status == 0
+                fprintf('  JAR contents:\n');
+                jar_lines = strsplit(jar_contents, '\n');
+                for i = 1:min(10, length(jar_lines))  % Show first 10 entries
+                    if ~isempty(strtrim(jar_lines{i}))
+                        fprintf('    %s\n', jar_lines{i});
+                    end
+                end
+                if contains(jar_contents, 'mjse/Bridge.class')
+                    fprintf('  ✓ mjse/Bridge.class found in JAR\n');
+                else
+                    fprintf('  ✗ mjse/Bridge.class NOT found in JAR!\n');
+                end
+            else
+                fprintf('  Warning: Could not inspect JAR contents\n');
+            end
+            
+            % 6. Check class file version
+            fprintf('\n[Step 6] Checking Bridge.class bytecode version...\n');
+            [status, class_info] = system(sprintf('javap -verbose -cp "%s" mjse.Bridge 2>&1 | grep "major version"', jar_path));
+            if status == 0 && ~isempty(class_info)
+                fprintf('  %s\n', strtrim(class_info));
+            else
+                fprintf('  Could not determine bytecode version\n');
+            end
+            
+            % 7. Attempt to load bridge using javaObject (most robust method)
+            fprintf('\n[Step 7] Attempting to load bridge...\n');
+            fprintf('  Using javaObject(''mjse.Bridge'') - bypasses MATLAB name cache\n');
+            
+            try
+                obj.bridge = javaObject('mjse.Bridge');
+                fprintf('  ✓✓✓ SUCCESS: Bridge loaded successfully! ✓✓✓\n');
+            catch ME
+                fprintf('  ✗✗✗ FAILED: %s ✗✗✗\n', ME.message);
+                fprintf('\n[Step 8] Additional diagnostics on failure...\n');
+                
+                % Try to get more specific error info
+                fprintf('  Error identifier: %s\n', ME.identifier);
+                fprintf('  Error message: %s\n', ME.message);
+                
+                % Check if it's a bytecode version mismatch
+                if contains(ME.message, 'Unsupported') || contains(ME.message, 'version')
+                    fprintf('\n  ⚠ DIAGNOSIS: Bytecode version mismatch likely!\n');
+                    fprintf('  The Bridge.class file was compiled for a different Java version.\n');
+                    fprintf('  MATLAB R2024b uses Java 11 (bytecode version 55.0)\n');
+                    fprintf('  Ensure javac is invoked with: -source 11 -target 11\n');
+                elseif contains(ME.message, 'not found') || contains(ME.message, 'cannot be located')
+                    fprintf('\n  ⚠ DIAGNOSIS: Class not found in JAR or classpath issue!\n');
+                    fprintf('  Check that mjse/Bridge.class exists in the JAR.\n');
+                else
+                    fprintf('\n  ⚠ DIAGNOSIS: Unknown issue. Full error:\n');
+                    fprintf('  %s\n', getReport(ME));
+                end
+                
+                fprintf('\n========================================\n');
+                error('MJSE:JavaBridgeLoadFailed', 'Failed to load Java bridge. See diagnostics above.');
+            end
+            
+            fprintf('========================================\n');
         end
         
         function launch_julia_daemon(obj)
