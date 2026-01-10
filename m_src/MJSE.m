@@ -195,8 +195,8 @@ classdef MJSE < handle
             elseif ispc
                 % Windows: Use 'start' command to run in background without window
                 % Note: /B runs without new window, first "" is window title (required)
-                % Redirect output to log file for debugging
-                cmd = sprintf('start /B "Julia Worker" "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > "%s" 2>&1', ...
+                % Use cmd /c to handle redirection properly
+                cmd = sprintf('start /B "Julia Worker" cmd /c ""%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > "%s" 2>&1"', ...
                     julia_exe, fullfile(repo_root, 'jl_src'), ...
                     worker_script, obj.tcp_port, obj.shm_path, feature('getpid'), log_file);
             else
