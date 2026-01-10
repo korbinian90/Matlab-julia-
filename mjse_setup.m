@@ -196,43 +196,44 @@ function apply_patchelf_shadowing(julia_dir)
         end
     end
     
-    % Patch Julia binaries to use renamed libraries
-    % Target both libjulia-internal.so.1.12 and libjulia.so.1.12
-    julia_libs_to_patch = {
-        fullfile(julia_lib, 'libjulia-internal.so.1.12');
-        fullfile(julia_lib, 'libjulia.so.1.12')
-    };
+    % Patch ALL Julia library files (.so) to use renamed libraries
+    % Get all .so files in lib/julia directory
+    so_files = dir(fullfile(julia_lib, '*.so*'));
     
-    for j = 1:length(julia_libs_to_patch)
-        target_lib = julia_libs_to_patch{j};
-        if exist(target_lib, 'file')
-            [~, target_name] = fileparts(target_lib);
-            fprintf('    Patching %s dependencies...\n', target_name);
-            
-            for i = 1:length(libs_to_shadow)
-                lib_name = libs_to_shadow{i};
-                % Compute shadowed name
-                so_idx = strfind(lib_name, '.so');
-                if ~isempty(so_idx)
-                    prefix = lib_name(1:so_idx(1)-1);
-                    suffix = lib_name(so_idx(1):end);
-                    shadowed_name = [prefix '_mjse' suffix];
-                else
-                    [~, base_name] = fileparts(lib_name);
-                    shadowed_name = [base_name '_mjse'];
-                end
-                
-                % Replace dependency
-                cmd = sprintf('patchelf --replace-needed %s %s "%s" 2>/dev/null', ...
-                    lib_name, shadowed_name, target_lib);
-                system(cmd);
+    fprintf('    Found %d library files to patch\n', length(so_files));
+    
+    for j = 1:length(so_files)
+        target_lib = fullfile(julia_lib, so_files(j).name);
+        
+        % Skip if it's a directory or symlink
+        if so_files(j).isdir
+            continue;
+        end
+        
+        % Patch dependencies for each .so file
+        for i = 1:length(libs_to_shadow)
+            lib_name = libs_to_shadow{i};
+            % Compute shadowed name
+            so_idx = strfind(lib_name, '.so');
+            if ~isempty(so_idx)
+                prefix = lib_name(1:so_idx(1)-1);
+                suffix = lib_name(so_idx(1):end);
+                shadowed_name = [prefix '_mjse' suffix];
+            else
+                [~, base_name] = fileparts(lib_name);
+                shadowed_name = [base_name '_mjse'];
             end
             
-            % Set RPATH to prioritize Julia's lib directories
-            cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', ...
-                target_lib);
+            % Replace dependency (silently - many won't have these deps)
+            cmd = sprintf('patchelf --replace-needed %s %s "%s" 2>/dev/null', ...
+                lib_name, shadowed_name, target_lib);
             system(cmd);
         end
+        
+        % Set RPATH to prioritize Julia's lib directories
+        cmd = sprintf('patchelf --set-rpath ''$ORIGIN:$ORIGIN/../lib'' "%s" 2>/dev/null', ...
+            target_lib);
+        system(cmd);
     end
     
     % Patch the julia binary executable
