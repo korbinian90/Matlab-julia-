@@ -12,39 +12,41 @@ Compatible with **R2019b through R2026+**.
   - Automatically handles **Dimensions** (up to 8D).
   - Automatically handles **Data Types** (Double, Single, Int/UInt).
   - ✅ **Complex Numbers**: Full support for complex arrays.
-- **✅ Dynamic Memory**: Shared memory buffer **automatically grows** (to fit large data) and **shrinks** (to save resources).
+- **✅ Dynamic Memory**: Shared memory buffer **automatically grows** (to fit large data) and **shrinks** (to save resources) on the fly.
 - **✅ Linux/Windows/macOS**: Cross-platform support with automated environment handling (e.g., `patchelf` isolation on Linux).
 
 ## 📦 Quick Start
 
 **Step 1: Clone & Run**
-No manual setup required. Just clone and run the example.
+No manual setup required.
 
 ```matlab
 % In MATLAB
 addpath('m_src');
-SimpleExample  % Demo script
+
+% Run the demo
+SimpleExample
 ```
 
-**Step 2: Basic Usage**
+**Step 2: Use in Your Code**
 Use the `MJSE` class directly. The first time you run `start()`, it will automatically download Julia if needed (approx. 5-10 mins on first run).
 
 ```matlab
 % Create engine
 engine = MJSE();
-engine.start(); % Auto-downloads Julia if missing!
+engine.start(); % Triggers auto-setup if needed
 
 % 1. Send Data (Automatic Type & Shape Preservation)
 data = rand(100, 100);
 result = engine.call('process', data); 
-% result is 100x100 double
+% result is 100x100 double (echoed back)
 
 % 2. Complex Numbers
 c_data = complex(rand(5), rand(5));
 res_c = engine.call('fft', c_data); 
 % res_c is 5x5 complex double
 
-% Clean up
+% Clean up when done
 engine.shutdown();
 ```
 
@@ -59,7 +61,7 @@ engine.shutdown();
 ```
 Matlab-julia-/
 ├── m_src/              # MATLAB Source
-│   └── MJSE.m          # Single-file engine manager (Setup + Execution)
+│   └── MJSE.m          # Engine manager (Setup + Execution + Protocol)
 ├── jl_src/             # Julia Backend
 │   └── MJSEWorker.jl   # Worker daemon
 ├── tests/              # Test Suite
@@ -69,12 +71,12 @@ Matlab-julia-/
 └── SimpleExample.m     # Usage demo
 ```
 
-## 🔧 Advanced Details
+## 🔧 Technical Details
 
 ### Protocol
 The communication uses a custom header (128 bytes) in shared memory:
 - **Metadata**: Encodes `DataType`, `NDims`, `Dims`, and `DataSize`.
-- **Dynamic Resizing**: If data exceeds the default 256MB buffer, the engine performs a synchronized `RESIZE` handshake to expand the file mapping on the fly.
+- **Dynamic Resizing**: If data exceeds the default 256MB buffer, the engine performs a synchronized `RESIZE` handshake to expand the file mapping.
 
 ### Linux Isolation
 On Linux, MJSE ensures stability by preventing MATLAB's outdated system libraries (`libstdc++`, etc.) from interfering with Julia. It uses an `env -u LD_LIBRARY_PATH` strategy (and optional `patchelf` patching if needed) to ensure Julia loads its own correct dependencies.

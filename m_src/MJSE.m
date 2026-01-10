@@ -317,15 +317,12 @@ classdef MJSE < handle
         
         function perform_handshake(obj)
             % Perform handshake with Julia
-            fprintf('DEBUG: Sending HANDSHAKE...\n');
             write(obj.tcp_client, uint8('HANDSHAKE'));
-            fprintf('DEBUG: HANDSHAKE sent, waiting for response...\n');
             
             % Wait for response (ACK is 3 bytes)
             % Use blocking read with timeout (handled by tcpclient property)
             try
                 response = char(read(obj.tcp_client, 3, 'uint8'));
-                fprintf('DEBUG: Received response: "%s"\n', response);
                 
                 if ~strcmp(response, 'ACK')
                     error('MJSE:HandshakeFailed', 'Invalid handshake response: %s', response);
@@ -333,8 +330,6 @@ classdef MJSE < handle
             catch e
                 error('MJSE:HandshakeFailed', 'No handshake response or timeout: %s', e.message);
             end
-            
-            fprintf('Handshake complete\n');
         end
         
         function write_shared_memory(obj, data)
