@@ -54,7 +54,7 @@ function parse_args()
             arg_type = Int
             required = true
     end
-    return parse_args(s)
+    return ArgParse.parse_args(s)
 end
 
 function init_shared_memory(state::WorkerState)
