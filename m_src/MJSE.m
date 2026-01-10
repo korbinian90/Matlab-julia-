@@ -18,6 +18,7 @@ classdef MJSE < handle
         tcp_client      % MATLAB tcpclient object
         julia_process   % Julia process handle
         is_initialized  % Initialization flag
+        current_buffer_size % Current buffer size
     end
     
     properties (Constant)
@@ -25,8 +26,34 @@ classdef MJSE < handle
         STATE_READY = uint64(1)
         STATE_PROCESSING = uint64(2)
         STATE_DONE = uint64(3)
-        HEADER_SIZE = 8  % 8-byte StateFlag
-        BUFFER_SIZE = 256 * 1024 * 1024  % 256 MB data buffer
+        
+        % Protocol constants
+        HEADER_SIZE = 128  % Total Header Size
+        DEFAULT_BUFFER_SIZE = 256 * 1024 * 1024  % 256 MB default
+        
+        % Data Types
+        TYPE_DOUBLE = uint64(1)
+        TYPE_SINGLE = uint64(2)
+        TYPE_INT8   = uint64(3)
+        TYPE_UINT8  = uint64(4)
+        TYPE_INT16  = uint64(5)
+        TYPE_UINT16 = uint64(6)
+        TYPE_INT32  = uint64(7)
+        TYPE_UINT32 = uint64(8)
+        TYPE_INT64  = uint64(9)
+        TYPE_UINT64 = uint64(10)
+        
+        % Complex Types
+        TYPE_COMPLEX_DOUBLE = uint64(11)
+        TYPE_COMPLEX_SINGLE = uint64(12)
+        TYPE_COMPLEX_INT8   = uint64(13)
+        TYPE_COMPLEX_UINT8  = uint64(14)
+        TYPE_COMPLEX_INT16  = uint64(15)
+        TYPE_COMPLEX_UINT16 = uint64(16)
+        TYPE_COMPLEX_INT32  = uint64(17)
+        TYPE_COMPLEX_UINT32 = uint64(18)
+        TYPE_COMPLEX_INT64  = uint64(19)
+        TYPE_COMPLEX_UINT64 = uint64(20)
     end
     
     methods
@@ -35,7 +62,10 @@ classdef MJSE < handle
             obj.shm_mmap = [];
             obj.tcp_client = [];
             obj.julia_process = [];
+            obj.current_buffer_size = obj.DEFAULT_BUFFER_SIZE;
         end
+        
+
         
         function start(obj)
             if obj.is_initialized
@@ -44,7 +74,10 @@ classdef MJSE < handle
             end
             
             try
-                % Step 1: Find available port
+                % Step 1: Auto-setup if Julia is missing
+                MJSE.setup();
+
+                % Step 2: Find available port
                 obj.find_available_port();
                 fprintf('Using TCP port: %d\n', obj.tcp_port);
                 
@@ -141,20 +174,16 @@ classdef MJSE < handle
             obj.shm_path = fullfile(tempdir, sprintf('mjse_shm_%s.dat', ...
                 char(matlab.lang.internal.uuid())));
             
-            total_size = obj.HEADER_SIZE + obj.BUFFER_SIZE;
-            
-            % Create file
-            fid = fopen(obj.shm_path, 'w');
+            % Initialize shared memory file
+            total_size = obj.current_buffer_size;
+            fid = fopen(obj.shm_path, 'wb');
             fwrite(fid, zeros(1, total_size, 'uint8'));
             fclose(fid);
             
-            % Memory map with 8-byte header + data buffer
-            obj.shm_mmap = memmapfile(obj.shm_path, ...
-                'Format', {'uint64', [1 1], 'StateFlag'; ...
-                           'uint8', [1 obj.BUFFER_SIZE], 'Data'}, ...
-                'Writable', true);
+            % Create memory map object
+            obj.create_memmap();
             
-            % Initialize to IDLE state
+            % Initialize
             obj.shm_mmap.Data.StateFlag = obj.STATE_IDLE;
             
             fprintf('Shared memory created: %s (%.2f MB)\n', obj.shm_path, ...
@@ -311,18 +340,41 @@ classdef MJSE < handle
         function write_shared_memory(obj, data)
             % Write data to shared memory and set flag
             
-            % Convert data to bytes
-            if isnumeric(data)
-                byte_data = typecast(data(:), 'uint8');
-            else
-                error('MJSE:UnsupportedType', 'Only numeric data supported');
+            % Encode metadata
+            [type_code, byte_data] = obj.encode_data(data);
+             
+            required_size = length(byte_data) + obj.HEADER_SIZE;
+            
+            % Check resizing logic
+            if length(byte_data) > (obj.current_buffer_size - obj.HEADER_SIZE)
+                % Grow buffer
+                new_size = max(required_size * 1.5, obj.current_buffer_size * 2);
+                % Align to 1MB
+                new_size = ceil(new_size / (1024*1024)) * 1024*1024;
+                fprintf('MJSE: Growing shared memory to %.2f MB\n', new_size/1024/1024);
+                obj.resize_shared_memory(new_size);
+                
+            elseif required_size < (obj.DEFAULT_BUFFER_SIZE - obj.HEADER_SIZE) && ...
+                   obj.current_buffer_size > obj.DEFAULT_BUFFER_SIZE
+               % Shrink buffer if it's large but we only need small space
+               % Only shrink if we are significantly over default
+               fprintf('MJSE: Shrinking shared memory to default (%.2f MB)\n', obj.DEFAULT_BUFFER_SIZE/1024/1024);
+               obj.resize_shared_memory(obj.DEFAULT_BUFFER_SIZE);
             end
             
-            if length(byte_data) > obj.BUFFER_SIZE
-                error('MJSE:DataTooLarge', 'Data exceeds buffer size');
-            end
+            % Write metadata
+            obj.shm_mmap.Data.DataType = type_code;
+            obj.shm_mmap.Data.DataSize = uint64(length(byte_data));
             
-            % Write data
+            dims = size(data);
+            obj.shm_mmap.Data.NDims = uint64(length(dims));
+            
+            % Write dims (up to 8 supported)
+            dims_padded = ones(1, 8, 'uint64');
+            dims_padded(1:length(dims)) = uint64(dims);
+            obj.shm_mmap.Data.Dims = dims_padded;
+            
+            % Write data bytes
             obj.shm_mmap.Data.Data(1:length(byte_data)) = byte_data;
             
             % Set state to READY
@@ -339,9 +391,30 @@ classdef MJSE < handle
                 current_state = obj.shm_mmap.Data.StateFlag;
                 
                 if current_state == obj.STATE_DONE
-                    % Read result (for now, just echo back the data)
-                    % TODO: Implement proper result reading with metadata
-                    result = obj.shm_mmap.Data.Data;
+                    % Read result 
+                    data_size = double(obj.shm_mmap.Data.DataSize);
+                    type_code = obj.shm_mmap.Data.DataType;
+                    n_dims = double(obj.shm_mmap.Data.NDims);
+                    dims = double(obj.shm_mmap.Data.Dims);
+                    
+                    % Sanity check size
+                    if data_size > (obj.current_buffer_size - obj.HEADER_SIZE)
+                         % This implies Julia wrote more than we expected? 
+                         % Or we processed in place.
+                         % If Julia needs to resize output, we haven't implemented that direction yet.
+                         % But for now, let's assume result <= buffer.
+                         % If result > buffer, Julia side check would fail or we need "RESIZE" from Julia.
+                         % For this iteration:
+                         warning('MJSE:DataTruncated', 'Data size exceeds buffer');
+                         data_size = obj.current_buffer_size - obj.HEADER_SIZE;
+                    end
+                    
+                    if data_size > 0
+                        raw_bytes = obj.shm_mmap.Data.Data(1:data_size);
+                        result = obj.decode_data(raw_bytes, type_code, dims(1:n_dims));
+                    else
+                        result = [];
+                    end
                     
                     % Reset to IDLE
                     obj.shm_mmap.Data.StateFlag = obj.STATE_IDLE;
@@ -378,6 +451,267 @@ classdef MJSE < handle
                     delete(obj.shm_path);
                 end
             catch
+            end
+        end
+        
+        function [type_code, byte_data] = encode_data(obj, data)
+            % Helper: Encode data to bytes and get type code
+            if ~isnumeric(data)
+                error('MJSE:UnsupportedType', 'Only numeric data supported');
+            end
+            
+            % Handle Complex Numbers
+            if ~isreal(data)
+                % Interleave real and imaginary parts: [r1, i1, r2, i2, ...]
+                % MATLAB stores separate arrays, Julia stores interleaved structs
+                real_part = real(data(:))';
+                imag_part = imag(data(:))';
+                % Create interleaved array [r1; i1; r2; i2...] -> then flatten
+                interleaved = [real_part; imag_part]; 
+                
+                byte_data = typecast(interleaved(:), 'uint8');
+                
+                switch class(data)
+                    case 'double', type_code = obj.TYPE_COMPLEX_DOUBLE;
+                    case 'single', type_code = obj.TYPE_COMPLEX_SINGLE;
+                    case 'int8',   type_code = obj.TYPE_COMPLEX_INT8;
+                    case 'uint8',  type_code = obj.TYPE_COMPLEX_UINT8;
+                    case 'int16',  type_code = obj.TYPE_COMPLEX_INT16;
+                    case 'uint16', type_code = obj.TYPE_COMPLEX_UINT16;
+                    case 'int32',  type_code = obj.TYPE_COMPLEX_INT32;
+                    case 'uint32', type_code = obj.TYPE_COMPLEX_UINT32;
+                    case 'int64',  type_code = obj.TYPE_COMPLEX_INT64;
+                    case 'uint64', type_code = obj.TYPE_COMPLEX_UINT64;
+                    otherwise
+                        error('MJSE:UnsupportedType', 'Unsupported complex class: %s', class(data));
+                end
+            else
+                % Handle Real Numbers
+                byte_data = typecast(data(:), 'uint8');
+                
+                switch class(data)
+                    case 'double', type_code = obj.TYPE_DOUBLE;
+                    case 'single', type_code = obj.TYPE_SINGLE;
+                    case 'int8',   type_code = obj.TYPE_INT8;
+                    case 'uint8',  type_code = obj.TYPE_UINT8;
+                    case 'int16',  type_code = obj.TYPE_INT16;
+                    case 'uint16', type_code = obj.TYPE_UINT16;
+                    case 'int32',  type_code = obj.TYPE_INT32;
+                    case 'uint32', type_code = obj.TYPE_UINT32;
+                    case 'int64',  type_code = obj.TYPE_INT64;
+                    case 'uint64', type_code = obj.TYPE_UINT64;
+                    otherwise
+                        error('MJSE:UnsupportedType', 'Unsupported class: %s', class(data));
+                end
+            end
+        end
+        
+        function result = decode_data(obj, raw_bytes, type_code, dims)
+            % Helper: Decode bytes to typed array
+            is_complex = false;
+            
+            switch type_code
+                case obj.TYPE_DOUBLE, type_str = 'double';
+                case obj.TYPE_SINGLE, type_str = 'single';
+                case obj.TYPE_INT8,   type_str = 'int8';
+                case obj.TYPE_UINT8,  type_str = 'uint8';
+                case obj.TYPE_INT16,  type_str = 'int16';
+                case obj.TYPE_UINT16, type_str = 'uint16';
+                case obj.TYPE_INT32,  type_str = 'int32';
+                case obj.TYPE_UINT32, type_str = 'uint32';
+                case obj.TYPE_INT64,  type_str = 'int64';
+                case obj.TYPE_UINT64, type_str = 'uint64';
+                
+                % Complex types
+                case obj.TYPE_COMPLEX_DOUBLE, type_str = 'double'; is_complex = true;
+                case obj.TYPE_COMPLEX_SINGLE, type_str = 'single'; is_complex = true;
+                case obj.TYPE_COMPLEX_INT8,   type_str = 'int8';   is_complex = true;
+                case obj.TYPE_COMPLEX_UINT8,  type_str = 'uint8';  is_complex = true;
+                case obj.TYPE_COMPLEX_INT16,  type_str = 'int16';  is_complex = true;
+                case obj.TYPE_COMPLEX_UINT16, type_str = 'uint16'; is_complex = true;
+                case obj.TYPE_COMPLEX_INT32,  type_str = 'int32';  is_complex = true;
+                case obj.TYPE_COMPLEX_UINT32, type_str = 'uint32'; is_complex = true;
+                case obj.TYPE_COMPLEX_INT64,  type_str = 'int64';  is_complex = true;
+                case obj.TYPE_COMPLEX_UINT64, type_str = 'uint64'; is_complex = true;
+                
+                otherwise
+                    warning('MJSE:UnknownType', 'Unknown type code %d, returning bytes', type_code);
+                    result = raw_bytes;
+                    return;
+            end
+            
+            typed_data = typecast(raw_bytes, type_str);
+            
+            if is_complex
+                % De-interleave complex data [r1, i1, r2, i2...]
+                % 1:2:end are reals, 2:2:end are imags
+                real_part = typed_data(1:2:end);
+                imag_part = typed_data(2:2:end);
+                result_flat = complex(real_part, imag_part);
+                result = reshape(result_flat, dims);
+            else
+                result = reshape(typed_data, dims);
+            end
+        end
+        
+        function create_memmap(obj)
+             % Create memory map object with current buffer size
+             obj.shm_mmap = memmapfile(obj.shm_path, ...
+                'Format', {
+                    'uint64', [1 1], 'StateFlag'; ...
+                    'uint64', [1 1], 'DataType'; ...
+                    'uint64', [1 1], 'NDims'; ...
+                    'uint64', [1 1], 'DataSize'; ...
+                    'uint64', [1 8], 'Dims'; ...
+                    'uint8',  [1 (128 - 32 - 64)], 'Reserved'; ...
+                    'uint8',  [1 (obj.current_buffer_size - 128)], 'Data'
+                }, ...
+                'Writable', true);
+        end
+        
+        function resize_shared_memory(obj, new_size)
+            % RESIZE_SHARED_MEMORY Protocol to resize buffer
+            % 1. Send RESIZE command
+            % 2. Close local mapping
+            % 3. Wait for ACK
+            % 4. Re-create mapping
+            
+            % Send resize command
+            cmd = sprintf('RESIZE %d', new_size);
+            write(obj.tcp_client, uint8(cmd));
+            
+            % Close local map immediately to release file lock
+            obj.shm_mmap = [];
+            
+            % Wait for ACK (or timeout)
+            % We can use read(obj.tcp_client, 3) for "ACK"
+            ack = char(read(obj.tcp_client, 3, 'uint8'));
+            
+            if ~strcmp(ack, 'ACK')
+                 error('MJSE:ResizeFailed', 'Failed to receive resize ACK. Received: %s', ack);
+            end
+            
+            % Update size and remap
+            obj.current_buffer_size = new_size;
+            obj.create_memmap();
+        end
+    end
+    
+    methods (Static)
+        function setup()
+            % SETUP Ensure Julia environment is ready
+            % Downloads Julia and prewarms cache if needed
+            
+            % Get project root directory
+            script_dir = fileparts(mfilename('fullpath'));
+            repo_root = fileparts(script_dir); % m_src -> root
+            external_dir = fullfile(repo_root, 'external');
+            julia_dir = fullfile(external_dir, 'julia');
+            
+            % Create external directory if needed
+            if ~exist(external_dir, 'dir')
+                mkdir(external_dir);
+            end
+            
+            % Check if Julia is present
+            if ~exist(julia_dir, 'dir')
+                fprintf('MJSE: Downloading portable Julia 1.12.x...\n');
+                MJSE.download_julia(julia_dir);
+            end
+            
+            % Check if cache needs prewarming
+             marker_file = fullfile(julia_dir, '.mjse_ready');
+             if ~exist(marker_file, 'file')
+                 fprintf('MJSE: Prewarming Julia cache...\n');
+                 MJSE.prewarm_julia_cache(julia_dir);
+                 fclose(fopen(marker_file, 'w'));
+             end
+        end
+    end
+    
+    methods (Static, Access = private)
+        function download_julia(julia_dir)
+            % Download portable Julia based on architecture
+            arch = computer('arch');
+            
+            if ispc
+                if strcmp(arch, 'win64')
+                    julia_url = 'https://julialang-s3.julialang.org/bin/winnt/x64/1.12/julia-1.12.4-win64.zip';
+                    archive_ext = 'zip';
+                else
+                    error('MJSE:UnsupportedPlatform', 'Unsupported Windows architecture');
+                end
+            elseif ismac
+                if strcmp(arch, 'maci64') || strcmp(arch, 'maca64')
+                    julia_url = 'https://julialang-s3.julialang.org/bin/mac/x64/1.12/julia-1.12.4-mac64.tar.gz';
+                    archive_ext = 'tar.gz';
+                else
+                    error('MJSE:UnsupportedPlatform', 'Unsupported macOS architecture');
+                end
+            elseif isunix
+                if strcmp(arch, 'glnxa64')
+                    julia_url = 'https://julialang-s3.julialang.org/bin/linux/x64/1.12/julia-1.12.4-linux-x86_64.tar.gz';
+                    archive_ext = 'tar.gz';
+                else
+                    error('MJSE:UnsupportedPlatform', 'Unsupported Linux architecture');
+                end
+            else
+                error('MJSE:UnsupportedPlatform', 'Unsupported platform');
+            end
+            
+            archive_path = fullfile(fileparts(julia_dir), ['julia.' archive_ext]);
+            
+            try
+                opts = weboptions('Timeout', 600);
+                websave(archive_path, julia_url, opts);
+                
+                % Extract
+                if strcmp(archive_ext, 'zip')
+                    unzip(archive_path, fileparts(julia_dir));
+                else
+                    system(sprintf('tar -xzf "%s" -C "%s"', archive_path, fileparts(julia_dir)));
+                end
+                
+                % Move folder
+                parent_dir = fileparts(julia_dir);
+                extracted = dir(fullfile(parent_dir, 'julia-*'));
+                if ~isempty(extracted) && extracted(1).isdir
+                    movefile(fullfile(parent_dir, extracted(1).name), julia_dir);
+                end
+                
+                delete(archive_path);
+            catch ME
+                if exist(archive_path, 'file'), delete(archive_path); end
+                rethrow(ME);
+            end
+        end
+        
+        function prewarm_julia_cache(julia_dir)
+             if ispc
+                julia_bin = fullfile(julia_dir, 'bin', 'julia.exe');
+            else
+                julia_bin = fullfile(julia_dir, 'bin', 'julia');
+            end
+            
+            if ~exist(julia_bin, 'file'), return; end
+            
+            % Get project directory (jl_src is sibling to m_src)
+            script_dir = fileparts(mfilename('fullpath'));
+            repo_root = fileparts(script_dir);
+            jl_project = fullfile(repo_root, 'jl_src');
+            
+            % Run precompilation with environment scrubbing on Linux
+            if isunix && ~ismac
+                cmd = sprintf('env -u LD_LIBRARY_PATH -u LD_PRELOAD "%s" --project="%s" -e "using Pkg; Pkg.add(\\"ArgParse\\"); Pkg.precompile()"', ...
+                    julia_bin, jl_project);
+            else
+                cmd = sprintf('"%s" --project="%s" -e "using Pkg; Pkg.add(\\"ArgParse\\"); Pkg.precompile()"', ...
+                    julia_bin, jl_project);
+            end
+            
+            [status, output] = system(cmd);
+            if status ~= 0
+                warning('MJSE:PrecompileFailed', 'Julia precompilation warning:\n%s', output);
             end
         end
     end

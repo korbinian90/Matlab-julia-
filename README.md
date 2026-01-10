@@ -1,194 +1,89 @@
 # MATLAB-Julia Satellite Engine (MJSE)
 ## Universal Hybrid Architecture: TCP + Shared Memory
 
-High-performance bidirectional communication between MATLAB and Julia using **TCP localhost** (control) + **shared memory** (data) for **R2019b-R2026+** compatibility.
+High-performance bidirectional communication between MATLAB and Julia using **TCP localhost** (control) + **shared memory** (data).
+Compatible with **R2019b through R2026+**.
 
-## 🚀 Quick Start
+## 🚀 Key Features
 
-**Step 1: One-time setup** (downloads Julia and dependencies)
+- **✅ Zero Setup**: Automatically downloads a portable Julia runtime (1.12.x) if none is found.
+- **✅ No Java Bridge**: Uses pure `tcpclient`, eliminating JVM version conflicts.
+- **✅ Automatic Data Handling**:
+  - Automatically handles **Dimensions** (up to 8D).
+  - Automatically handles **Data Types** (Double, Single, Int/UInt).
+  - ✅ **Complex Numbers**: Full support for complex arrays.
+- **✅ Dynamic Memory**: Shared memory buffer **automatically grows** (to fit large data) and **shrinks** (to save resources).
+- **✅ Linux/Windows/macOS**: Cross-platform support with automated environment handling (e.g., `patchelf` isolation on Linux).
+
+## 📦 Quick Start
+
+**Step 1: Clone & Run**
+No manual setup required. Just clone and run the example.
 
 ```matlab
-% Clone the repository and navigate to it
-% git clone https://github.com/korbinian90/Matlab-julia-.git
-% cd Matlab-julia-
-
-mjse_setup  % Downloads Julia 1.12.x, installs packages (5-10 minutes)
+% In MATLAB
+addpath('m_src');
+SimpleExample  % Demo script
 ```
 
-**Step 2: Use MJSE in your code**
+**Step 2: Basic Usage**
+Use the `MJSE` class directly. The first time you run `start()`, it will automatically download Julia if needed (approx. 5-10 mins on first run).
 
 ```matlab
-% Add to path
-addpath('m_src');
-
-% Create and use the engine
+% Create engine
 engine = MJSE();
-engine.start();
+engine.start(); % Auto-downloads Julia if missing!
 
-% Process data with Julia (zero-copy transfer via shared memory)
-data = rand(215, 215, 215);  % ~80MB
-result = engine.call('process', data);
+% 1. Send Data (Automatic Type & Shape Preservation)
+data = rand(100, 100);
+result = engine.call('process', data); 
+% result is 100x100 double
+
+% 2. Complex Numbers
+c_data = complex(rand(5), rand(5));
+res_c = engine.call('fft', c_data); 
+% res_c is 5x5 complex double
 
 % Clean up
 engine.shutdown();
 ```
 
-**That's it!** Pure MATLAB and Julia - no Java Bridge, no version conflicts.
+## 🧠 Architecture Requirements
 
-## Features
+- **MATLAB**: R2019b or newer (requires `tcpclient`).
+- **OS**: Windows 10/11, macOS, or Linux (Ubuntu/Debian tested).
+- **Network**: Localhost (127.0.0.1) access required.
 
-- **✅ R2019b-R2026+ Compatible**: No Java Bridge, no version conflicts
-- **✅ Zero-Copy Transfer**: Shared memory via `memmapfile` ↔ `Mmap.mmap`
-- **✅ TCP Control Plane**: Native MATLAB `tcpclient` + Julia `Sockets`
-- **✅ Dynamic Ports**: Auto-selects available port using `java.net.ServerSocket(0)`
-- **✅ PID Monitoring**: Julia worker exits if MATLAB terminates
-- **✅ Cross-platform**: Ubuntu, macOS, Windows
-- **✅ Simple Setup**: One-time `mjse_setup` downloads everything
-
-## Architecture
-
-### Universal Hybrid Design
-
-**Control Plane** (TCP on `127.0.0.1`):
-- Commands: HANDSHAKE, PROCESS, SHUTDOWN
-- Dynamic port allocation
-- Native MATLAB `tcpclient` + Julia `Sockets.listen`
-
-**Data Plane** (Shared Memory):
-- 8-byte StateFlag header: `[0=Idle | 1=Ready | 2=Processing | 3=Done]`
-- 256 MB data buffer
-- MATLAB: `memmapfile` for direct writes
-- Julia: `Mmap.mmap` for direct reads
-
-### Core Components
-
-- **`MJSE.m`**: Manager - handles TCP connection, shared memory, Julia launch
-- **`MJSEWorker.jl`**: Worker - TCP server, shared memory processor, heartbeat
-- **`mjse_setup.m`**: Setup script (auto-called on first run)
-- **`test_roundtrip.m`**: 100MB verification test with `norm(original - returned) == 0`
-
-### Shared Memory Layout
-
-```
-[Header: 8 bytes]
-  StateFlag (uint64): 0=Idle, 1=Ready, 2=Processing, 3=Done
-
-[Data: 256 MB buffer]
-  Raw data bytes for transfer
-```
-
-## Testing
-
-Run the verification test after setup:
-
-```matlab
-addpath('m_src', 'tests');
-test_roundtrip();  % Tests 100MB roundtrip with zero-error verification
-```
-
-## Linux Library Isolation
-
-On Linux, MJSE uses **patchelf library shadowing** to prevent MATLAB library conflicts. This provides production-grade stability:
-
-### How It Works
-
-1. **Library Renaming**: During setup, Julia's problematic libraries are renamed:
-   - `libstdc++.so.6` → `libstdc++_mjse.so.6`
-   - `libgcc_s.so.1` → `libgcc_s_mjse.so.1`
-   - `libgfortran.so.5` → `libgfortran_mjse.so.5`
-
-2. **Dependency Updates**: The `libjulia.so.1.12` binary is patched using `patchelf --replace-needed` to reference the renamed libraries.
-
-3. **RPATH Configuration**: Both `libjulia.so.1.12` and the `julia` binary have their RPATH set to `$ORIGIN/../lib:$ORIGIN/../lib/julia`, ensuring Julia always uses its own libraries.
-
-4. **Environment Scrubbing**: Julia is launched with `env -u LD_LIBRARY_PATH -u LD_PRELOAD` to prevent MATLAB's environment from interfering.
-
-### Benefits
-
-- **Immunity to MATLAB Conflicts**: Julia will never load MATLAB's incompatible versions of `libstdc++`, `libgcc_s`, or `libgfortran`
-- **No Runtime Overhead**: Library paths resolved at load time via RPATH
-- **Stable Across Systems**: Works regardless of system library versions
-- **No Julia Modification**: Julia's internal dependencies remain unchanged
-
-### Requirements
-
-- **patchelf** must be installed: `sudo apt-get install patchelf`
-- Automatically applied during `mjse_setup` on Linux
-- No action needed on macOS or Windows
-
-## Atomic Memory Synchronization
-
-The StateFlag protocol ensures data integrity even with concurrent access:
-
-### Protocol Sequence
-
-1. **MATLAB** writes data to shared memory buffer
-2. **MATLAB** sets StateFlag = 1 (READY)  
-3. **MATLAB** sends TCP "PROCESS" command
-4. **Julia** receives TCP command
-5. **Julia** spin-waits until StateFlag == 1 (prevents torn reads)
-6. **Julia** processes data from shared memory
-7. **Julia** sets StateFlag = 3 (DONE)
-8. **MATLAB** spin-waits until StateFlag == 3
-9. **MATLAB** reads result from shared memory
-
-This prevents race conditions where TCP arrives before memory writes are visible to Julia.
-
-## Robust Cleanup
-
-### Julia-Side
-- **Heartbeat Monitor**: Background task checks MATLAB PID every 5 seconds
-- **Auto-Exit**: If MATLAB terminates, Julia worker exits gracefully
-- **Prevents Orphans**: No orphaned Julia processes after MATLAB crashes
-
-### MATLAB-Side
-- **onCleanup Handler**: Automatically sends SHUTDOWN command
-- **Resource Cleanup**: Deletes shared memory file on exit
-- **Graceful Termination**: Waits for Julia acknowledgment before closing
-
-## Development Status
-
-### ✅ Implemented
-
-- TCP + Shared Memory hybrid architecture
-- Native MATLAB `tcpclient` (no Java Bridge)
-- `memmapfile`-based shared memory with StateFlag protocol
-- Julia worker with TCP server and heartbeat
-- Dynamic port allocation
-- 100MB roundtrip test with zero-error verification
-- CI/CD with GitHub Actions (Ubuntu/macOS/Windows)
-- Linux library isolation via `LD_LIBRARY_PATH`
-
-### 🔄 In Progress (TODOs in code)
-
-- Full function dispatch in Julia worker (currently echo stub)
-- Rich payload metadata (dimensions, element type, endianness, checksum)
-- Timeout handling and error recovery
-- Configurable buffer sizing
-- Performance optimization
-
-## Contributing
-
-This is an active development project. See TODO comments in the code for areas that need implementation or improvement.
-
-## Repository Structure
+## 📁 Repository Structure
 
 ```
 Matlab-julia-/
-├── m_src/              # MATLAB source files
-│   ├── jlcall.m        # High-level interface (legacy compatibility)
-│   └── MJSE.m          # Engine manager (TCP + shared memory)
-├── jl_src/             # Julia source files
-│   ├── MJSEWorker.jl   # Worker daemon (TCP server + StateFlag protocol)
-│   └── Project.toml    # Julia dependencies
-├── tests/              # Test files
-│   └── test_roundtrip.m
-├── external/           # Downloaded Julia runtime (gitignored)
-├── mjse_setup.m        # One-time setup script
-└── .github/workflows/  # CI configuration
+├── m_src/              # MATLAB Source
+│   └── MJSE.m          # Single-file engine manager (Setup + Execution)
+├── jl_src/             # Julia Backend
+│   └── MJSEWorker.jl   # Worker daemon
+├── tests/              # Test Suite
+│   ├── test_roundtrip.m # Verify data integrity
+│   └── test_resize.m    # Verify dynamic buffer resizing
+├── external/           # Downloaded Julia runtime (created automatically)
+└── SimpleExample.m     # Usage demo
 ```
 
-## License
+## 🔧 Advanced Details
 
-See repository license file.
+### Protocol
+The communication uses a custom header (128 bytes) in shared memory:
+- **Metadata**: Encodes `DataType`, `NDims`, `Dims`, and `DataSize`.
+- **Dynamic Resizing**: If data exceeds the default 256MB buffer, the engine performs a synchronized `RESIZE` handshake to expand the file mapping on the fly.
 
+### Linux Isolation
+On Linux, MJSE ensures stability by preventing MATLAB's outdated system libraries (`libstdc++`, etc.) from interfering with Julia. It uses an `env -u LD_LIBRARY_PATH` strategy (and optional `patchelf` patching if needed) to ensure Julia loads its own correct dependencies.
+
+## 🤝 Contributing
+
+Run the test suite to ensure no regressions:
+```matlab
+addpath('tests', 'm_src');
+test_roundtrip;
+test_resize;
+```
