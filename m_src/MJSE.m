@@ -200,11 +200,16 @@ classdef MJSE < handle
                     julia_exe, fullfile(repo_root, 'jl_src'), ...
                     worker_script, obj.tcp_port, obj.shm_path, feature('getpid'), log_file);
             else
-                % macOS: Use shell to redirect output then run in background
-                % nohup doesn't always respect explicit redirection, so use sh -c
-                cmd = sprintf('sh -c ''"%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > "%s" 2>&1'' &', ...
+                % macOS: Write command to temp script for proper redirection
+                script_file = fullfile(tempdir, sprintf('mjse_launch_%d.sh', obj.tcp_port));
+                fid = fopen(script_file, 'w');
+                fprintf(fid, '#!/bin/bash\n');
+                fprintf(fid, 'exec "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d > "%s" 2>&1 &\n', ...
                     julia_exe, fullfile(repo_root, 'jl_src'), ...
                     worker_script, obj.tcp_port, obj.shm_path, feature('getpid'), log_file);
+                fclose(fid);
+                system(sprintf('chmod +x "%s"', script_file));
+                cmd = sprintf('"%s"', script_file);
             end
             
             fprintf('Launching Julia worker...\n');
