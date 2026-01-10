@@ -175,8 +175,19 @@ function apply_patchelf_shadowing(julia_dir)
         end
         
         % Create shadowed version (rename to *_mjse.so)
-        [~, name, ext] = fileparts(lib_name);
-        shadowed_name = [name '_mjse' ext];
+        % Handle multi-part extensions like .so.6
+        % libstdc++.so.6 -> libstdc++_mjse.so.6
+        [~, base_name] = fileparts(lib_name);
+        % Find the first .so occurrence
+        so_idx = strfind(lib_name, '.so');
+        if ~isempty(so_idx)
+            % Split at first .so
+            prefix = lib_name(1:so_idx(1)-1);  % e.g., 'libstdc++'
+            suffix = lib_name(so_idx(1):end);   % e.g., '.so.6'
+            shadowed_name = [prefix '_mjse' suffix];
+        else
+            shadowed_name = [base_name '_mjse'];
+        end
         shadowed_path = fullfile(julia_lib, shadowed_name);
         
         if ~exist(shadowed_path, 'file')
@@ -192,8 +203,16 @@ function apply_patchelf_shadowing(julia_dir)
         fprintf('    Updating libjulia.so.1.12 dependencies...\n');
         for i = 1:length(libs_to_shadow)
             lib_name = libs_to_shadow{i};
-            [~, name, ext] = fileparts(lib_name);
-            shadowed_name = [name '_mjse' ext];
+            % Handle multi-part extensions
+            so_idx = strfind(lib_name, '.so');
+            if ~isempty(so_idx)
+                prefix = lib_name(1:so_idx(1)-1);
+                suffix = lib_name(so_idx(1):end);
+                shadowed_name = [prefix '_mjse' suffix];
+            else
+                [~, base_name] = fileparts(lib_name);
+                shadowed_name = [base_name '_mjse'];
+            end
             
             cmd = sprintf('patchelf --replace-needed %s %s "%s" 2>/dev/null', ...
                 lib_name, shadowed_name, libjulia);
