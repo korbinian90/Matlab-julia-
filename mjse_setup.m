@@ -168,8 +168,14 @@ function prewarm_julia_cache(julia_dir)
     fprintf('  Installing and precompiling Julia packages (ArgParse, Sockets, Mmap)...\n');
     
     % Run Julia precompilation with package installation
-    cmd = sprintf('"%s" --project="%s" -e "using Pkg; Pkg.add(\\"ArgParse\\"); Pkg.precompile()"', ...
-        julia_bin, jl_project);
+    % IMPORTANT: scrubbing LD_LIBRARY_PATH on Linux to prevent MATLAB library pollution
+    if isunix && ~ismac
+        cmd = sprintf('env -u LD_LIBRARY_PATH -u LD_PRELOAD "%s" --project="%s" -e "using Pkg; Pkg.add(\\"ArgParse\\"); Pkg.precompile()"', ...
+            julia_bin, jl_project);
+    else
+        cmd = sprintf('"%s" --project="%s" -e "using Pkg; Pkg.add(\\"ArgParse\\"); Pkg.precompile()"', ...
+            julia_bin, jl_project);
+    end
     
     [status, output] = system(cmd);
     
