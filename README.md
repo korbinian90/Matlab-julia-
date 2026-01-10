@@ -3,23 +3,29 @@
 
 High-performance bidirectional communication between MATLAB and Julia using **TCP localhost** (control) + **shared memory** (data) for **R2019b-R2026+** compatibility.
 
-## 🚀 Quick Start (Clone and Run!)
+## 🚀 Quick Start
 
-**Just clone and run - everything auto-installs on first use:**
+**Step 1: One-time setup** (downloads Julia and dependencies)
 
 ```matlab
-% Clone the repository
+% Clone the repository and navigate to it
 % git clone https://github.com/korbinian90/Matlab-julia-.git
 % cd Matlab-julia-
 
+mjse_setup  % Downloads Julia 1.12.x, installs packages (5-10 minutes)
+```
+
+**Step 2: Use MJSE in your code**
+
+```matlab
 % Add to path
 addpath('m_src');
 
 % Create and use the engine
 engine = MJSE();
-engine.start();  % Auto-downloads Julia on first run
+engine.start();
 
-% Test with 100MB data
+% Process data with Julia (zero-copy transfer via shared memory)
 data = rand(215, 215, 215);  % ~80MB
 result = engine.call('process', data);
 
@@ -27,22 +33,17 @@ result = engine.call('process', data);
 engine.shutdown();
 ```
 
-**That's it!** On first run, setup will automatically:
-- Download portable Julia 1.12.x
-- Install required packages (ArgParse, Sockets, Mmap)
-- Configure library isolation (Linux)
-
-No Java Bridge, no manual setup - pure MATLAB and Julia!
+**That's it!** Pure MATLAB and Julia - no Java Bridge, no version conflicts.
 
 ## Features
 
-- **✅ R2019b-R2026+ Compatible**: No Java version conflicts
-- **✅ Auto-Setup**: Downloads Julia automatically on first run
+- **✅ R2019b-R2026+ Compatible**: No Java Bridge, no version conflicts
 - **✅ Zero-Copy Transfer**: Shared memory via `memmapfile` ↔ `Mmap.mmap`
 - **✅ TCP Control Plane**: Native MATLAB `tcpclient` + Julia `Sockets`
 - **✅ Dynamic Ports**: Auto-selects available port using `java.net.ServerSocket(0)`
-- **✅ PID Monitoring**: Julia exits if MATLAB dies (heartbeat)
+- **✅ PID Monitoring**: Julia worker exits if MATLAB terminates
 - **✅ Cross-platform**: Ubuntu, macOS, Windows
+- **✅ Simple Setup**: One-time `mjse_setup` downloads everything
 
 ## Architecture
 
@@ -76,13 +77,9 @@ No Java Bridge, no manual setup - pure MATLAB and Julia!
   Raw data bytes for transfer
 ```
 
-## Manual Setup (Optional)
-
-```matlab
-mjse_setup  % Downloads Julia, installs packages
-```
-
 ## Testing
+
+Run the verification test after setup:
 
 ```matlab
 addpath('m_src', 'tests');
@@ -91,43 +88,31 @@ test_roundtrip();  % Tests 100MB roundtrip with zero-error verification
 
 ## Linux Library Isolation
 
-Julia is launched with `LD_LIBRARY_PATH` pointing to its own libraries, preventing MATLAB library conflicts without file modification.
-
 On Linux, MJSE uses `LD_LIBRARY_PATH` to prioritize Julia's own libraries when launching the Julia worker, preventing conflicts with MATLAB's bundled libraries. This approach:
 - Does not modify Julia's library files (no renaming needed)
 - Allows Julia to use its own `libstdc++.so.6`, `libgcc_s.so.1`, and `libgfortran.so.5`
 - Prevents MATLAB library hijacking without breaking Julia's internal dependencies
 
-The `MJSE_SHADOW_LIBS=1` environment variable in CI indicates library isolation is active (via `LD_LIBRARY_PATH`).
-
 ## Development Status
 
 ### ✅ Implemented
 
-- Auto-setup on first run
-- `jlcall()` interface for MATLAB-Julia communication  
-- `memmapfile`-based shared memory (MATLAB side)
-- Java bridge with UNIX socket support (via reflection for Java 11+/16+)
-- Julia worker with socket listener and heartbeat
-- Binary handshake protocol
-- Roundtrip test framework
+- TCP + Shared Memory hybrid architecture
+- Native MATLAB `tcpclient` (no Java Bridge)
+- `memmapfile`-based shared memory with StateFlag protocol
+- Julia worker with TCP server and heartbeat
+- Dynamic port allocation
+- 100MB roundtrip test with zero-error verification
 - CI/CD with GitHub Actions (Ubuntu/macOS/Windows)
+- Linux library isolation via `LD_LIBRARY_PATH`
 
 ### 🔄 In Progress (TODOs in code)
 
-- Windows Named Pipe support in Java bridge
-- Full shared memory data protocol (currently echo stub)
+- Full function dispatch in Julia worker (currently echo stub)
 - Rich payload metadata (dimensions, element type, endianness, checksum)
 - Timeout handling and error recovery
-- Function dispatch in Julia worker
 - Configurable buffer sizing
-
-## Testing
-
-```matlab
-addpath('m_src', 'tests');
-test_roundtrip();
-```
+- Performance optimization
 
 ## Contributing
 
@@ -138,19 +123,15 @@ This is an active development project. See TODO comments in the code for areas t
 ```
 Matlab-julia-/
 ├── m_src/              # MATLAB source files
-│   ├── jlcall.m        # Main interface (auto-setup)
-│   ├── MJSE.m          # Engine manager
-│   └── mjse/           # Java bridge
-│       ├── Bridge.java
-│       └── bridge_build.m
+│   ├── jlcall.m        # High-level interface (legacy compatibility)
+│   └── MJSE.m          # Engine manager (TCP + shared memory)
 ├── jl_src/             # Julia source files
-│   ├── MJSEWorker.jl   # Worker daemon
-│   └── Project.toml
+│   ├── MJSEWorker.jl   # Worker daemon (TCP server + StateFlag protocol)
+│   └── Project.toml    # Julia dependencies
 ├── tests/              # Test files
 │   └── test_roundtrip.m
-├── external/           # Auto-downloaded Julia runtime (gitignored)
-├── mjse_setup.m        # Setup script (auto-called by jlcall)
-├── setup.m             # Legacy setup script
+├── external/           # Downloaded Julia runtime (gitignored)
+├── mjse_setup.m        # One-time setup script
 └── .github/workflows/  # CI configuration
 ```
 

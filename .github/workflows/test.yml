@@ -26,7 +26,12 @@ jobs:
       with:
         release: R2024b
     
-    - name: Run MATLAB tests (auto-setup handles Julia download)
+    - name: Run setup (downloads Julia and dependencies)
+      uses: matlab-actions/run-command@v2
+      with:
+        command: mjse_setup
+    
+    - name: Run MATLAB tests
       uses: matlab-actions/run-command@v2
       with:
         command: |

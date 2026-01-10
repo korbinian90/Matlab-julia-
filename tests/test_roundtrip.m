@@ -3,26 +3,10 @@ function test_roundtrip()
 %
 % Tests Universal Hybrid Architecture (TCP + Shared Memory)
 % Verifies norm(original - returned) == 0 for data integrity
+%
+% NOTE: Run mjse_setup.m first if Julia is not installed
 
     fprintf('=== MJSE Roundtrip Test (Universal Hybrid) ===\n\n');
-    
-    % Auto-setup: Check if Julia is installed, download if needed
-    fprintf('Checking setup...\n');
-    script_dir = fileparts(mfilename('fullpath'));
-    project_root = fileparts(script_dir);
-    julia_dir = fullfile(project_root, 'external', 'julia');
-    
-    if ispc
-        julia_exe = fullfile(julia_dir, 'bin', 'julia.exe');
-    else
-        julia_exe = fullfile(julia_dir, 'bin', 'julia');
-    end
-    
-    if ~isfile(julia_exe)
-        fprintf('Julia not found - running setup...\n');
-        run(fullfile(project_root, 'mjse_setup.m'));
-        fprintf('Setup complete!\n\n');
-    end
     
     % Create 100MB test data
     fprintf('Creating 100MB test matrix...\n');
