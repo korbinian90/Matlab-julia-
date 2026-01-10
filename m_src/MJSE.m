@@ -319,8 +319,8 @@ classdef MJSE < handle
                 if contains(ME.message, 'Unsupported') || contains(ME.message, 'version')
                     fprintf('\n  ⚠ DIAGNOSIS: Bytecode version mismatch likely!\n');
                     fprintf('  The Bridge.class file was compiled for a different Java version.\n');
-                    fprintf('  MATLAB R2024b uses Java 11 (bytecode version 55.0)\n');
-                    fprintf('  Ensure javac is invoked with: -source 11 -target 11\n');
+                    fprintf('  Bridge should be compiled for Java 8 compatibility (bytecode version 52.0)\n');
+                    fprintf('  Ensure javac is invoked with: --release 8\n');
                 elseif contains(ME.message, 'not found') || contains(ME.message, 'cannot be located')
                     fprintf('\n  ⚠ DIAGNOSIS: Class not found in JAR or classpath issue!\n');
                     fprintf('  Check that mjse/Bridge.class exists in the JAR.\n');
