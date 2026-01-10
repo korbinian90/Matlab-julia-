@@ -177,6 +177,60 @@ function handle_client(state::WorkerState)
                     write(state.client, "ACK")
                     flush(state.client)
 
+                elseif startswith(command, "RESIZE")
+                    # Protocol: RESIZE <bytes>
+                    parts = split(command)
+                    if length(parts) == 2
+                        new_size = parse(Int, parts[2])
+                        @info "Resizing shared memory" new_size = new_size
+
+                        # Retry logic for resizing (Windows file locking can be sticky)
+                        success = false
+                        last_err = nothing
+
+                        for attempt in 1:10
+                            try
+                                # Close current mappings if open
+                                if state.shm_array !== nothing
+                                    state.shm_array = nothing
+                                end
+                                if state.shm_io !== nothing
+                                    close(state.shm_io)
+                                    state.shm_io = nothing
+                                end
+
+                                GC.gc() # Force cleanup of mmap handles
+                                sleep(0.2) # Give OS time to release locks
+
+                                # Resize file
+                                open(state.shm_path, "r+") do io
+                                    truncate(io, new_size)
+                                end
+
+                                # Re-initialize
+                                state.shm_io = open(state.shm_path, "r+")
+                                state.shm_array = Mmap.mmap(state.shm_io, Vector{UInt8}, new_size)
+
+                                success = true
+                                break
+                            catch e
+                                last_err = e
+                                @warn "Resize attempt $attempt failed" exception = e
+                                sleep(0.5)
+                            end
+                        end
+
+                        if success
+                            write(state.client, "ACK")
+                            flush(state.client)
+                            @info "Resize successful" new_size = new_size
+                        else
+                            @error "Resize failed after retries" exception = last_err
+                            write(state.client, "ERR")
+                            flush(state.client)
+                        end
+                    end
+
                 elseif startswith(command, "PROCESS")
                     # Process data from shared memory
                     process_data(state)

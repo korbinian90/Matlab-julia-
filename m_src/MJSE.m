@@ -571,20 +571,21 @@ classdef MJSE < handle
         
         function resize_shared_memory(obj, new_size)
             % RESIZE_SHARED_MEMORY Protocol to resize buffer
-            % 1. Send RESIZE command
-            % 2. Close local mapping
+            % 1. Close local mapping (release lock)
+            % 2. Send RESIZE command
             % 3. Wait for ACK
             % 4. Re-create mapping
+            
+            % Close local map immediately to release file lock
+            obj.shm_mmap = [];
             
             % Send resize command
             cmd = sprintf('RESIZE %d', new_size);
             write(obj.tcp_client, uint8(cmd));
             
-            % Close local map immediately to release file lock
-            obj.shm_mmap = [];
-            
             % Wait for ACK (or timeout)
             % We can use read(obj.tcp_client, 3) for "ACK"
+            % Note: Timeout is now 60s
             ack = char(read(obj.tcp_client, 3, 'uint8'));
             
             if ~strcmp(ack, 'ACK')
