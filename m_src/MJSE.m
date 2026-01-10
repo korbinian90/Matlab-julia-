@@ -190,7 +190,8 @@ classdef MJSE < handle
                     worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
             elseif ispc
                 % Windows: Use 'start' command to run in background without window
-                cmd = sprintf('start /B "" "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d', ...
+                % Note: /B runs without new window, first "" is window title (required)
+                cmd = sprintf('start /B "Julia Worker" "%s" --project="%s" "%s" --port %d --shm "%s" --pid %d', ...
                     julia_exe, fullfile(repo_root, 'jl_src'), ...
                     worker_script, obj.tcp_port, obj.shm_path, feature('getpid'));
             else
@@ -201,14 +202,19 @@ classdef MJSE < handle
             end
             
             fprintf('Launching Julia worker...\n');
-            [status, ~] = system(cmd);
-            
-            if status ~= 0
-                error('MJSE:LaunchFailed', 'Failed to launch Julia worker');
+            if ispc
+                % On Windows, start returns immediately, status is always 0
+                [~, ~] = system(cmd);
+                % Give Julia more time to start on Windows
+                pause(5);
+            else
+                [status, ~] = system(cmd);
+                if status ~= 0
+                    error('MJSE:LaunchFailed', 'Failed to launch Julia worker');
+                end
+                % Give Julia time to start
+                pause(2);
             end
-            
-            % Give Julia time to start
-            pause(2);
         end
         
         function connect_tcp(obj)
