@@ -31,10 +31,17 @@ function test_roundtrip()
         
         % Verify data integrity
         fprintf('Verifying data integrity...\n');
-        if isnumeric(result) && numel(result) >= numel(test_data)
-            % Reshape result to match input
-            result_reshaped = result(1:numel(test_data));
-            result_reshaped = reshape(result_reshaped, size(test_data));
+        if isnumeric(result) && numel(result) >= numel(test_data) * 8
+            % Result comes back as uint8 bytes representing doubles
+            % Need to typecast back to double
+            % First, extract correct number of bytes (8 bytes per double element)
+            raw_bytes = result(1:numel(test_data) * 8);
+            
+            % Typecast bytes back to double
+            result_double = typecast(raw_bytes, 'double');
+            
+            % Reshape to original size
+            result_reshaped = reshape(result_double, size(test_data));
             
             % Calculate error norm
             error_norm = norm(double(test_data(:)) - double(result_reshaped(:)));
