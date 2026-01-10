@@ -313,8 +313,9 @@ classdef MJSE < handle
         end
     end
     
-    methods (Access = private, Static)
+    methods
         function delete(obj)
+            % Destructor - automatically called when object is destroyed
             obj.shutdown();
         end
     end
