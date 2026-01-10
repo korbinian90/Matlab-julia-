@@ -261,13 +261,56 @@ function apply_patchelf_shadowing(julia_dir)
         system(cmd);
     end
     
-    % Step 4: Patch the julia binary executable
+    % Step 4: Patch the julia binary executable with RPATH and force-link shadowed libs
     julia_bin = fullfile(julia_dir, 'bin', 'julia');
     if exist(julia_bin, 'file')
         fprintf('    Patching julia binary RPATH...\n');
         cmd = sprintf('patchelf --set-rpath ''$ORIGIN/../lib:$ORIGIN/../lib/julia'' "%s" 2>/dev/null', ...
             julia_bin);
         system(cmd);
+        
+        % Force-link shadowed libraries to pre-load them into memory
+        fprintf('    Force-linking shadowed libraries to julia binary...\n');
+        for i = 1:length(libs_to_shadow)
+            lib_name = libs_to_shadow{i};
+            so_idx = strfind(lib_name, '.so');
+            if ~isempty(so_idx)
+                prefix = lib_name(1:so_idx(1)-1);
+                suffix = lib_name(so_idx(1):end);
+                shadowed_name = [prefix '_mjse' suffix];
+            else
+                [~, base_name] = fileparts(lib_name);
+                shadowed_name = [base_name '_mjse'];
+            end
+            
+            cmd = sprintf('patchelf --add-needed %s "%s" 2>/dev/null', ...
+                shadowed_name, julia_bin);
+            system(cmd);
+            fprintf('      Added dependency: %s\n', shadowed_name);
+        end
+    end
+    
+    % Step 4b: Also force-link to main libjulia library
+    libjulia_path = fullfile(julia_lib_julia, 'libjulia.so.1.12');
+    if exist(libjulia_path, 'file')
+        fprintf('    Force-linking shadowed libraries to libjulia.so...\n');
+        for i = 1:length(libs_to_shadow)
+            lib_name = libs_to_shadow{i};
+            so_idx = strfind(lib_name, '.so');
+            if ~isempty(so_idx)
+                prefix = lib_name(1:so_idx(1)-1);
+                suffix = lib_name(so_idx(1):end);
+                shadowed_name = [prefix '_mjse' suffix];
+            else
+                [~, base_name] = fileparts(lib_name);
+                shadowed_name = [base_name '_mjse'];
+            end
+            
+            cmd = sprintf('patchelf --add-needed %s "%s" 2>/dev/null', ...
+                shadowed_name, libjulia_path);
+            system(cmd);
+            fprintf('      Added dependency: %s\n', shadowed_name);
+        end
     end
     
     % Step 5: Verification - test Julia can load
